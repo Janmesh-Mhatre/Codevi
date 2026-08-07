@@ -1,0 +1,100 @@
+@import "tailwindcss";
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+
+/* Dark mode is driven by a `.dark` class on <html>, toggled from uiStore
+   (see src/hooks/useTheme.ts), not by the OS media query. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+  Design system: "Blueprint" — the app's subject is memory and execution
+  made visible, so the palette borrows from schematic drawings and
+  terminal readouts rather than a generic SaaS look. Two accents carry
+  all meaning: blueprint blue for static structure, amber for whatever
+  is currently active. Everything else stays quiet.
+*/
+@theme {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+
+  /* Light mode (default) */
+  --color-canvas: #eef1f5;
+  --color-surface: #ffffff;
+  --color-surface-raised: #f5f7fa;
+  --color-border: #d7dce3;
+  --color-fg: #1b2230;
+  --color-fg-muted: #5c6577;
+  --color-accent: #2e7cb8;
+  --color-accent-fg: #ffffff;
+  --color-active: #c9821f;
+  --color-danger: #c4453f;
+}
+
+.dark {
+  --color-canvas: #0f1319;
+  --color-surface: #161b24;
+  --color-surface-raised: #1d2330;
+  --color-border: #2a3242;
+  --color-fg: #e7eaf0;
+  --color-fg-muted: #8a93a6;
+  --color-accent: #4fa3d1;
+  --color-accent-fg: #0f1319;
+  --color-active: #e3a23c;
+  --color-danger: #e0605a;
+}
+
+:root {
+  color-scheme: light;
+}
+.dark {
+  color-scheme: dark;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-canvas text-fg font-sans antialiased;
+  }
+
+  ::selection {
+    background-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
+  }
+
+  /* Thin, quiet scrollbars that stay in character with the rest of the UI. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-border) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background-color: var(--color-border);
+    border-radius: 9999px;
+  }
+  *::-webkit-scrollbar-track {
+    background-color: transparent;
+  }
+}
+
+@layer utilities {
+  /* Signature background for the Visualization Panel's empty state: a
+     faint blueprint grid, standing in for the schematic that will be
+     drawn there once memory visualization ships. */
+  .bg-blueprint-grid {
+    background-image:
+      linear-gradient(color-mix(in srgb, var(--color-accent) 14%, transparent) 1px, transparent 1px),
+      linear-gradient(90deg, color-mix(in srgb, var(--color-accent) 14%, transparent) 1px, transparent 1px);
+    background-size: 24px 24px;
+    background-position: -1px -1px;
+  }
+}

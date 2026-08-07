@@ -1,0 +1,55 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Local environment overrides — see .env.example
+.env
+.env.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Tauri build output
+src-tauri/target/
+
+# Rust backup files
+*.rs.bk
+
+# Test coverage
+coverage/
+
+# Cache directories
+.cache/
+
+# Temporary files
+tmp/
+temp/
+
+# Build cache
+*.tsbuildinfo
+
+# OS files
+Thumbs.db
+Desktop.ini
+
+# macOS
+.AppleDouble
+.LSOverride
