@@ -98,3 +98,13 @@
     background-position: -1px -1px;
   }
 }
+
+/* Monaco decoration class for the current execution line (Phase 3) —
+   plain CSS rather than a Tailwind utility because Monaco decorations
+   apply raw class names outside Tailwind's own scanning. Amber matches
+   this app's "active state" token everywhere else (see the Toolbar's
+   Run button, the AST tree's error highlighting uses danger instead). */
+.codevi-execution-line {
+  background-color: color-mix(in srgb, var(--color-active) 22%, transparent);
+  border-left: 3px solid var(--color-active);
+}

@@ -12,25 +12,28 @@ import {
   Moon,
 } from "lucide-react";
 import { useUIStore } from "../../state/uiStore";
+import { pauseExecution, resetExecution, runExecution, stepExecution, useExecutionStore } from "../../state/executionStore";
 
 interface ToolbarButtonProps {
   label: string;
   icon: ComponentType<{ size?: number | string }>;
   onClick: () => void;
   variant?: "default" | "primary";
+  disabled?: boolean;
 }
 
-function ToolbarButton({ label, icon: Icon, onClick, variant = "default" }: ToolbarButtonProps) {
+function ToolbarButton({ label, icon: Icon, onClick, variant = "default", disabled = false }: ToolbarButtonProps) {
   return (
     <button
       type="button"
       title={label}
       aria-label={label}
       onClick={onClick}
+      disabled={disabled}
       className={
         variant === "primary"
-          ? "flex items-center gap-1.5 rounded-md bg-accent px-2.5 py-1.5 text-sm font-medium text-accent-fg hover:opacity-90"
-          : "flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-fg-muted hover:bg-surface-raised hover:text-fg"
+          ? "flex items-center gap-1.5 rounded-md bg-accent px-2.5 py-1.5 text-sm font-medium text-accent-fg hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:opacity-40"
+          : "flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-fg-muted hover:bg-surface-raised hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-muted"
       }
     >
       <Icon size={16} />
@@ -43,18 +46,22 @@ function Divider() {
 }
 
 /**
- * Every button here except the theme toggle is a placeholder — clicking
- * it shows a "not implemented yet" toast rather than doing anything, per
- * the Phase 1 spec. Wiring them up to real behavior belongs to later
- * phases (Run/Pause/Step/Reset → Phase 3, Open/Save → Phase 1 follow-up
- * or Phase 11 depending on scope, Settings → not yet scoped).
+ * Run/Pause/Step Forward/Reset are live as of Phase 3, wired to
+ * executionStore's action functions and disabled when the current
+ * execution status makes them meaningless (see
+ * docs/PHASE_3_EXECUTION.md → "Toolbar wiring" for the exact rules).
+ * Step Back stays a placeholder deliberately — true reverse-stepping
+ * wasn't in the Phase 3 brief and isn't implemented; it still shows the
+ * "not implemented" toast. Open/Save/Settings remain out of scope too.
  */
 export function Toolbar() {
   const showToast = useUIStore((state) => state.showToast);
   const theme = useUIStore((state) => state.theme);
   const toggleTheme = useUIStore((state) => state.toggleTheme);
+  const status = useExecutionStore((state) => state.status);
 
   const notImplemented = () => showToast("Feature not implemented yet.");
+  const isBusy = status === "preparing" || status === "running";
 
   return (
     <div className="flex h-12 shrink-0 items-center gap-1 border-b border-border bg-surface-raised px-3">
@@ -65,11 +72,17 @@ export function Toolbar() {
       <ToolbarButton label="Save File" icon={Save} onClick={notImplemented} />
       <Divider />
 
-      <ToolbarButton label="Run" icon={Play} onClick={notImplemented} variant="primary" />
-      <ToolbarButton label="Pause" icon={Pause} onClick={notImplemented} />
-      <ToolbarButton label="Step Back" icon={StepBack} onClick={notImplemented} />
-      <ToolbarButton label="Step Forward" icon={StepForward} onClick={notImplemented} />
-      <ToolbarButton label="Reset" icon={RotateCcw} onClick={notImplemented} />
+      <ToolbarButton
+        label={status === "paused" ? "Resume" : "Run"}
+        icon={Play}
+        onClick={runExecution}
+        variant="primary"
+        disabled={isBusy}
+      />
+      <ToolbarButton label="Pause" icon={Pause} onClick={pauseExecution} disabled={status !== "running"} />
+      <ToolbarButton label="Step Back (not implemented)" icon={StepBack} onClick={notImplemented} />
+      <ToolbarButton label="Step Forward" icon={StepForward} onClick={stepExecution} disabled={isBusy} />
+      <ToolbarButton label="Reset" icon={RotateCcw} onClick={resetExecution} />
 
       <div className="flex-1" />
 

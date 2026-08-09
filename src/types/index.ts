@@ -14,10 +14,11 @@ export type SupportedLanguage = "c" | "cpp" | "java" | "python" | "javascript";
 
 export type ThemeMode = "light" | "dark";
 
-/** High-level program state. Nothing in Phase 1 ever moves this out of
- * "idle" — it exists so the Toolbar, Console, and panels have a real type
- * to read from once the Phase 3 execution engine starts writing to it. */
-export type ExecutionStatus = "idle" | "running" | "paused" | "stopped";
+/** High-level program state, driven for real starting Phase 3 (see
+ * src/execution/). "preparing" covers validating the AST and setting up
+ * the interpreter between clicking Run and the first step actually
+ * executing. */
+export type ExecutionStatus = "idle" | "preparing" | "running" | "paused" | "completed" | "error";
 
 /** A single stack frame. Populated starting in Phase 4/6. */
 export interface StackFrame {

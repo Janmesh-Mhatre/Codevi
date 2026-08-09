@@ -9,6 +9,16 @@ interface AstTreeNodeProps {
   depth: number;
 }
 
+/**
+ * Decodes literal unicode escape sequences (e.g. `\u201C`, `\u201D`, `\u00A9`)
+ * into their corresponding Unicode characters for display.
+ */
+export function decodeUnicodeEscapes(text: string): string {
+  return text.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) =>
+    String.fromCharCode(parseInt(hex, 16))
+  );
+}
+
 /** One row in the AST tree, plus (recursively) its children. Kept as its
  * own component rather than inlined so each subtree owns its own
  * expand/collapse state — expanding a deep node doesn't rerender its
@@ -17,6 +27,7 @@ export function AstTreeNode({ node, depth }: AstTreeNodeProps) {
   const [expanded, setExpanded] = useState(depth < DEFAULT_EXPANDED_DEPTH);
   const hasChildren = node.children.length > 0;
   const isProblem = node.isError || node.isMissing;
+  const displayText = node.text !== undefined ? decodeUnicodeEscapes(node.text) : undefined;
 
   return (
     <div>
@@ -37,7 +48,13 @@ export function AstTreeNode({ node, depth }: AstTreeNodeProps) {
         <span className="min-w-0 break-words font-mono">
           {node.fieldName && <span className="text-fg-muted">{node.fieldName}: </span>}
           <span className={isProblem ? "font-semibold" : ""}>{node.type}</span>
-          {node.text !== undefined && <span className="text-fg-muted"> &ldquo;{node.text}&rdquo;</span>}
+          {displayText !== undefined && (
+            <span className="text-fg-muted">
+              {" “"}
+              {displayText}
+              {"”"}
+            </span>
+          )}
         </span>
 
         <span className="ml-auto shrink-0 whitespace-nowrap pl-2 font-mono text-xs text-fg-muted">

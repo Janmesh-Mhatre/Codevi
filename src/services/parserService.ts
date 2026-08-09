@@ -6,7 +6,7 @@ import type { Tree, Point } from "web-tree-sitter";
 import webTreeSitterWasmUrl from "web-tree-sitter/web-tree-sitter.wasm?url";
 import treeSitterCWasmUrl from "tree-sitter-c/tree-sitter-c.wasm?url";
 import { convertToAstNode, collectDiagnostics, countAllNodes } from "../languages/c/astConvert";
-import type { AstNode, ParseResult } from "../languages/c/astTypes";
+import type { AstNode, ParseResult, SyntaxDiagnostic } from "../languages/c/astTypes";
 import { scope } from "../utils/logger";
 
 const log = scope("parserService");
@@ -28,6 +28,7 @@ export interface TextChange {
 
 let parser: Parser | null = null;
 let currentTree: Tree | null = null;
+let lastDiagnostics: SyntaxDiagnostic[] = [];
 let initPromise: Promise<void> | null = null;
 
 /** Loads the Tree-sitter WASM runtime and the C grammar. Safe to call
@@ -121,16 +122,36 @@ export function parseSource(source: string, changes?: readonly TextChange[]): Pa
 
   if (!tree) {
     log.warn("parse() returned null — parser has no language assigned?");
+    lastDiagnostics = [];
     return { ast: null, diagnostics: [], parseTimeMs, usedIncrementalParse, nodeCount: 0 };
   }
 
+  lastDiagnostics = collectDiagnostics(tree);
+
   return {
     ast: convertToAstNode(tree.rootNode),
-    diagnostics: collectDiagnostics(tree),
+    diagnostics: lastDiagnostics,
     parseTimeMs,
     usedIncrementalParse,
     nodeCount: countAllNodes(tree),
   };
+}
+
+/**
+ * Read-only access to the current parse state for non-UI consumers —
+ * currently just src/execution/engine/ExecutionEngine.ts (Phase 3),
+ * which needs the live tree to interpret and the diagnostics to refuse
+ * running broken source. Deliberately plain functions rather than
+ * anything Zustand/React-shaped, so the execution engine's only
+ * dependency is this service, not the UI layer — see
+ * docs/PHASE_3_EXECUTION.md → "Clean layering".
+ */
+export function getCurrentTree(): Tree | null {
+  return currentTree;
+}
+
+export function getLastDiagnostics(): SyntaxDiagnostic[] {
+  return lastDiagnostics;
 }
 
 /**

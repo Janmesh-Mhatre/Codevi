@@ -3,6 +3,7 @@ import Editor, { loader, type OnMount, type OnChange } from "@monaco-editor/reac
 import * as monaco from "monaco-editor";
 import { useCParser } from "../../hooks/useCParser";
 import { useParserStore } from "../../state/parserStore";
+import { useExecutionStore } from "../../state/executionStore";
 import type { TextChange } from "../../services/parserService";
 // Vite's `?worker` suffix bundles each worker as a local asset. This is
 // what keeps Monaco fully offline — without it, @monaco-editor/react
@@ -211,10 +212,21 @@ export function CodeEditor() {
   const setCode = useEditorStore((state) => state.setCode);
   const theme = useUIStore((state) => state.theme);
   const diagnostics = useParserStore((state) => state.diagnostics);
+  const executionStatus = useExecutionStore((state) => state.status);
+  const currentStep = useExecutionStore((state) => state.currentStep);
   const mountedRef = useRef(false);
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
+  const decorationsRef = useRef<ReturnType<Parameters<OnMount>[0]["createDecorationsCollection"]> | null>(null);
   const [fontsReady, setFontsReady] = useState(false);
   const { notifyChange } = useCParser();
+
+  // Editable except while a program is actually mid-execution — the
+  // interpreter is running against a specific parsed snapshot of the
+  // source (see docs/PHASE_3_EXECUTION.md → "Tree lifetime during a
+  // run"), so letting the text change underneath it would desync the
+  // highlighted line from what's actually executing. Completed/Error/
+  // Idle all allow editing again.
+  const isReadOnly = executionStatus === "preparing" || executionStatus === "running" || executionStatus === "paused";
 
   // Wait for the IBM Plex Mono webfont to finish loading before rendering
   // the editor. Monaco measures character widths on mount — if the font
@@ -244,6 +256,7 @@ export function CodeEditor() {
     registerSmartEditHandlers(_editor);
 
     editorRef.current = _editor;
+    decorationsRef.current = _editor.createDecorationsCollection([]);
     mountedRef.current = true;
     log.info("Monaco mounted");
   }, [theme]);
@@ -280,6 +293,30 @@ export function CodeEditor() {
     );
   }, [diagnostics]);
 
+  // The current-execution-line highlight (Phase 3). Cleared on
+  // idle/completed/error/reset, not just on an explicit reset click —
+  // see the ExecutionStatus values this checks against.
+  useEffect(() => {
+    const collection = decorationsRef.current;
+    if (!collection) return;
+    const showHighlight = currentStep && (executionStatus === "running" || executionStatus === "paused");
+    if (!showHighlight) {
+      collection.set([]);
+      return;
+    }
+    collection.set([
+      {
+        range: new monaco.Range(currentStep.line + 1, 1, currentStep.line + 1, 1),
+        options: {
+          isWholeLine: true,
+          className: "codevi-execution-line",
+          stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
+        },
+      },
+    ]);
+    editorRef.current?.revealLineInCenterIfOutsideViewport(currentStep.line + 1);
+  }, [currentStep, executionStatus]);
+
   // Show a minimal placeholder while fonts are loading to prevent Monaco
   // from measuring against wrong font metrics.
   if (!fontsReady) {
@@ -307,8 +344,7 @@ export function CodeEditor() {
         automaticLayout: true,
         scrollBeyondLastLine: false,
         renderLineHighlight: "all",
-        // Phase 2 adds syntax understanding via Tree-sitter but still
-        // no code execution — that's Phase 3.
+        readOnly: isReadOnly,
 
         // ── Caret ──────────────────────────────────────────────────────
         // Standard VS Code cursor defaults. The line cursor sits cleanly

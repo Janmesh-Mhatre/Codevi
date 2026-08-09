@@ -1,20 +1,32 @@
 import { create } from "zustand";
-import type { ExecutionStatus } from "../types";
-
-interface ExecutionState {
-  status: ExecutionStatus;
-  currentLine: number | null;
-}
+import { ExecutionEngine } from "../execution/engine/ExecutionEngine";
+import { INITIAL_EXECUTION_STATE, type ExecutionState } from "../execution/models/executionTypes";
 
 /**
- * Placeholder store — intentionally inert in Phase 1.
- *
- * Nothing in this phase writes to this store; the Toolbar's Run / Pause /
- * Step / Reset buttons show a "not implemented" toast instead of touching
- * it. It exists now so the Execution Engine (Phase 3) has a destination to
- * write to and the Toolbar/Console/panels already know how to read it.
+ * Live as of Phase 3 — was an inert placeholder through Phase 2. The
+ * store itself holds no logic; it's a thin Zustand mirror of
+ * ExecutionEngine's state (see src/execution/engine/ExecutionEngine.ts),
+ * kept in sync via engine.subscribe(). Components call the exported
+ * action functions below rather than the engine directly, so nothing in
+ * src/components ever imports ExecutionEngine itself.
  */
-export const useExecutionStore = create<ExecutionState>()(() => ({
-  status: "idle",
-  currentLine: null,
-}));
+export const executionEngine = new ExecutionEngine();
+
+export const useExecutionStore = create<ExecutionState>()(() => INITIAL_EXECUTION_STATE);
+
+executionEngine.subscribe((state) => {
+  useExecutionStore.setState(state);
+});
+
+export function runExecution(): void {
+  executionEngine.run();
+}
+export function pauseExecution(): void {
+  executionEngine.pause();
+}
+export function stepExecution(): void {
+  executionEngine.step();
+}
+export function resetExecution(): void {
+  executionEngine.reset();
+}
