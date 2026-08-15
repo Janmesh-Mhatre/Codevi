@@ -1,5 +1,42 @@
 import type { Node as SyntaxNode } from "web-tree-sitter";
+import type { Scope } from "./scope";
 import type { CValue } from "./values";
+
+/**
+ * A live entry on the interpreter's call stack (Phase 4). One of these
+ * exists per active (unreturned) function call, for the whole time
+ * that call is on the stack — not just while it's the topmost/active
+ * one. `currentNode`/`currentScope` start out as the function's entry
+ * point and its top-level scope, and get updated every time this frame
+ * yields a step (see interpreter.ts's `makeStep`) — so once a nested
+ * call pushes a new frame on top, this frame's currentNode/currentScope
+ * simply stop changing, correctly frozen at wherever it was paused. That
+ * update is the only mechanism behind both "b disappears after its if
+ * block ends" and "a paused caller shows the line it called from" — see
+ * docs/PHASE_4_VISUALIZATION.md → "How scope-correct display works".
+ */
+export interface RuntimeFrame {
+  functionName: string;
+  /** The function's own top-level scope — where its parameters live.
+   * Kept distinct from currentScope because currentScope may be a scope
+   * nested several blocks deep inside this one. */
+  scope: Scope;
+  parameterNames: string[];
+  currentNode: SyntaxNode;
+  currentScope: Scope;
+}
+
+/** Plain-data snapshot of one call-stack frame, yielded as part of every
+ * InterpreterStep. Parameters and locals are kept separate (rather than
+ * one flat variable list) because the Stack panel wants to show them
+ * that way — see docs/PHASE_4_VISUALIZATION.md. */
+export interface StackFrameSnapshot {
+  functionName: string;
+  callDepth: number;
+  line: number;
+  parameters: Record<string, CValue>;
+  locals: Record<string, CValue>;
+}
 
 /**
  * Internal step record the interpreter yields at each meaningful point
@@ -18,7 +55,13 @@ export interface InterpreterStep {
   functionName: string;
   callDepth: number;
   description: string;
+  /** The active (topmost) frame's parameters+locals, merged — kept for
+   * continuity with Phase 3 consumers. Always derivable from callStack
+   * below (callStack[callStack.length - 1]), never tracked separately,
+   * so the two can't drift apart. */
   variables: Record<string, CValue>;
+  /** New in Phase 4: every currently-active frame, innermost last. */
+  callStack: StackFrameSnapshot[];
 }
 
 /** Thrown for anything the interpreter genuinely cannot make sense of —

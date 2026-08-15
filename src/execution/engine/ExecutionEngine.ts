@@ -1,6 +1,6 @@
 import { interpretProgram } from "../../languages/c/interpreter/interpreter";
 import type { CValue } from "../../languages/c/interpreter/values";
-import type { InterpreterStep } from "../../languages/c/interpreter/types";
+import type { InterpreterStep, StackFrameSnapshot } from "../../languages/c/interpreter/types";
 import { getCurrentTree, getLastDiagnostics } from "../../services/parserService";
 import { scope } from "../../utils/logger";
 import {
@@ -8,6 +8,8 @@ import {
   type ExecutionLogEntry,
   type ExecutionState,
   type ExecutionStep,
+  type ExecutionValue,
+  type StackFrame,
 } from "../models/executionTypes";
 
 const log = scope("executionEngine");
@@ -30,11 +32,27 @@ const MAX_LOG_ENTRIES = 50;
 
 let logIdCounter = 0;
 
-function toExecutionStep(step: InterpreterStep): ExecutionStep {
-  const variables: ExecutionStep["variables"] = {};
-  for (const [name, value] of Object.entries(step.variables)) {
-    variables[name] = { type: value.type, value: value.value };
+function toPlainValues(values: Record<string, CValue>): Record<string, ExecutionValue> {
+  const result: Record<string, ExecutionValue> = {};
+  for (const [name, value] of Object.entries(values)) {
+    result[name] = { type: value.type, value: value.value };
   }
+  return result;
+}
+
+function toStackFrame(frame: StackFrameSnapshot, isActive: boolean): StackFrame {
+  return {
+    functionName: frame.functionName,
+    callDepth: frame.callDepth,
+    line: frame.line,
+    parameters: toPlainValues(frame.parameters),
+    locals: toPlainValues(frame.locals),
+    isActive,
+  };
+}
+
+function toExecutionStep(step: InterpreterStep): ExecutionStep {
+  const callStack = step.callStack.map((frame, index) => toStackFrame(frame, index === step.callStack.length - 1));
   return {
     line: step.node.startPosition.row,
     column: step.node.startPosition.column,
@@ -44,7 +62,8 @@ function toExecutionStep(step: InterpreterStep): ExecutionStep {
     functionName: step.functionName,
     callDepth: step.callDepth,
     description: step.description,
-    variables,
+    variables: toPlainValues(step.variables),
+    callStack,
   };
 }
 

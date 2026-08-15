@@ -11,7 +11,16 @@ import {
   type CType,
   type CValue,
 } from "./values";
-import { BreakSignal, ContinueSignal, InterpreterError, isKnownLibraryFunction, unsupported, type InterpreterStep } from "./types";
+import {
+  BreakSignal,
+  ContinueSignal,
+  InterpreterError,
+  isKnownLibraryFunction,
+  unsupported,
+  type InterpreterStep,
+  type RuntimeFrame,
+  type StackFrameSnapshot,
+} from "./types";
 
 const MAX_CALL_DEPTH = 200;
 
@@ -72,15 +81,48 @@ function collectFunctions(rootNode: SyntaxNode): Map<string, SyntaxNode> {
   return functions;
 }
 
+/** Splits a merged scope snapshot into parameters vs. other locals for
+ * one frame, and reads its current line — see RuntimeFrame's doc
+ * comment in types.ts for how currentNode/currentScope stay accurate
+ * for every frame, not just the topmost one. */
+function buildFrameSnapshot(frame: RuntimeFrame, callDepth: number): StackFrameSnapshot {
+  const merged = frame.currentScope.snapshot();
+  const parameters: Record<string, CValue> = {};
+  const locals: Record<string, CValue> = {};
+  for (const [name, value] of Object.entries(merged)) {
+    if (frame.parameterNames.includes(name)) parameters[name] = value;
+    else locals[name] = value;
+  }
+  return { functionName: frame.functionName, callDepth, line: frame.currentNode.startPosition.row, parameters, locals };
+}
+
+/** Records that the topmost frame is currently paused at `node`/`scope`,
+ * then builds the full InterpreterStep — including a snapshot of every
+ * active frame, not just this one. This one function is the entire
+ * mechanism behind Phase 4's scope-correct, multi-frame call stack. */
 function makeStep(
   node: SyntaxNode,
   kind: InterpreterStep["kind"],
-  functionName: string,
-  callDepth: number,
+  callStack: RuntimeFrame[],
   scope: Scope,
   description: string,
 ): InterpreterStep {
-  return { node, kind, functionName, callDepth, description, variables: scope.snapshot() };
+  const top = callStack[callStack.length - 1];
+  if (top) {
+    top.currentNode = node;
+    top.currentScope = scope;
+  }
+  const stack = callStack.map((frame, index) => buildFrameSnapshot(frame, index + 1));
+  const topSnapshot = stack[stack.length - 1];
+  return {
+    node,
+    kind,
+    functionName: top?.functionName ?? "?",
+    callDepth: callStack.length,
+    description,
+    variables: topSnapshot ? { ...topSnapshot.parameters, ...topSnapshot.locals } : {},
+    callStack: stack,
+  };
 }
 
 /**
@@ -104,7 +146,7 @@ function* callFunction(
   fnNode: SyntaxNode,
   args: CValue[],
   functions: Map<string, SyntaxNode>,
-  callStack: string[],
+  callStack: RuntimeFrame[],
 ): Generator<InterpreterStep, CValue | undefined, void> {
   if (callStack.length >= MAX_CALL_DEPTH) {
     throw new InterpreterError(`Maximum call depth (${MAX_CALL_DEPTH}) exceeded — likely unbounded recursion`, fnNode);
@@ -115,10 +157,13 @@ function* callFunction(
   const paramListNode = declarator?.childForFieldName("parameters");
   const returnType = mapPrimitiveType(fnNode.childForFieldName("type")?.text);
 
-  callStack.push(name);
   const scope = new Scope(null); // no closures in C — each call starts fresh
-
   const paramNodes = paramListNode ? namedChildren(paramListNode).filter((n) => n.type === "parameter_declaration") : [];
+  const parameterNames = paramNodes.map((p) => p.childForFieldName("declarator")?.text).filter((n): n is string => !!n);
+
+  const frame: RuntimeFrame = { functionName: name, scope, parameterNames, currentNode: fnNode, currentScope: scope };
+  callStack.push(frame);
+
   paramNodes.forEach((paramNode, index) => {
     const paramName = paramNode.childForFieldName("declarator")?.text;
     const paramType = mapPrimitiveType(paramNode.childForFieldName("type")?.text);
@@ -127,7 +172,7 @@ function* callFunction(
     }
   });
 
-  yield makeStep(fnNode, "call-enter", name, callStack.length, scope, `Entering function "${name}"`);
+  yield makeStep(fnNode, "call-enter", callStack, scope, `Entering function "${name}"`);
 
   const bodyNode = fnNode.childForFieldName("body");
   const result = bodyNode ? yield* executeBlock(bodyNode, scope, functions, callStack) : NORMAL;
@@ -136,8 +181,7 @@ function* callFunction(
   yield makeStep(
     fnNode,
     "call-exit",
-    name,
-    callStack.length,
+    callStack,
     scope,
     returnValue !== undefined ? `Returning from "${name}" with ${formatValue(returnValue)}` : `Returning from "${name}"`,
   );
@@ -150,7 +194,7 @@ function* executeBlock(
   blockNode: SyntaxNode,
   parentScope: Scope,
   functions: Map<string, SyntaxNode>,
-  callStack: string[],
+  callStack: RuntimeFrame[],
 ): Generator<InterpreterStep, StatementResult, void> {
   const scope = new Scope(parentScope);
   for (const statement of namedChildren(blockNode)) {
@@ -164,29 +208,27 @@ function* executeStatement(
   node: SyntaxNode,
   scope: Scope,
   functions: Map<string, SyntaxNode>,
-  callStack: string[],
+  callStack: RuntimeFrame[],
 ): Generator<InterpreterStep, StatementResult, void> {
-  const functionName = callStack[callStack.length - 1] ?? "?";
-
   switch (node.type) {
     case "compound_statement":
       return yield* executeBlock(node, scope, functions, callStack);
 
     case "declaration": {
-      yield makeStep(node, "statement", functionName, callStack.length, scope, truncate(node.text));
+      yield makeStep(node, "statement", callStack, scope, truncate(node.text));
       yield* executeDeclaration(node, scope, functions, callStack);
       return NORMAL;
     }
 
     case "expression_statement": {
-      yield makeStep(node, "statement", functionName, callStack.length, scope, truncate(node.text));
+      yield makeStep(node, "statement", callStack, scope, truncate(node.text));
       const expr = namedChildren(node)[0];
       if (expr) yield* evaluate(expr, scope, functions, callStack);
       return NORMAL;
     }
 
     case "if_statement": {
-      yield makeStep(node, "statement", functionName, callStack.length, scope, `if (${truncate(unwrapParens(node.childForFieldName("condition")!).text, 40)})`);
+      yield makeStep(node, "statement", callStack, scope, `if (${truncate(unwrapParens(node.childForFieldName("condition")!).text, 40)})`);
       const conditionNode = unwrapParens(node.childForFieldName("condition")!);
       const condition = yield* evaluate(conditionNode, scope, functions, callStack);
       if (isTruthy(condition)) {
@@ -207,7 +249,7 @@ function* executeStatement(
       const conditionNode = unwrapParens(node.childForFieldName("condition")!);
       const bodyNode = node.childForFieldName("body")!;
       while (true) {
-        yield makeStep(node, "statement", functionName, callStack.length, scope, `while (${truncate(conditionNode.text, 40)})`);
+        yield makeStep(node, "statement", callStack, scope, `while (${truncate(conditionNode.text, 40)})`);
         const condition = yield* evaluate(conditionNode, scope, functions, callStack);
         if (!isTruthy(condition)) break;
         try {
@@ -232,7 +274,7 @@ function* executeStatement(
           if (signal instanceof BreakSignal) break;
           if (!(signal instanceof ContinueSignal)) throw signal;
         }
-        yield makeStep(node, "statement", functionName, callStack.length, scope, `do ... while (${truncate(conditionNode.text, 40)})`);
+        yield makeStep(node, "statement", callStack, scope, `do ... while (${truncate(conditionNode.text, 40)})`);
         const condition = yield* evaluate(conditionNode, scope, functions, callStack);
         if (!isTruthy(condition)) break;
       }
@@ -253,7 +295,7 @@ function* executeStatement(
 
       while (true) {
         if (conditionNode) {
-          yield makeStep(node, "statement", functionName, callStack.length, forScope, `for-condition: ${truncate(conditionNode.text, 40)}`);
+          yield makeStep(node, "statement", callStack, forScope, `for-condition: ${truncate(conditionNode.text, 40)}`);
           const condition = yield* evaluate(conditionNode, forScope, functions, callStack);
           if (!isTruthy(condition)) break;
         }
@@ -265,7 +307,7 @@ function* executeStatement(
           if (!(signal instanceof ContinueSignal)) throw signal;
         }
         if (updateNode) {
-          yield makeStep(node, "statement", functionName, callStack.length, forScope, `for-update: ${truncate(updateNode.text, 40)}`);
+          yield makeStep(node, "statement", callStack, forScope, `for-update: ${truncate(updateNode.text, 40)}`);
           yield* evaluate(updateNode, forScope, functions, callStack);
         }
       }
@@ -273,18 +315,18 @@ function* executeStatement(
     }
 
     case "return_statement": {
-      yield makeStep(node, "statement", functionName, callStack.length, scope, truncate(node.text));
+      yield makeStep(node, "statement", callStack, scope, truncate(node.text));
       const exprNode = namedChildren(node)[0];
       const value = exprNode ? yield* evaluate(exprNode, scope, functions, callStack) : undefined;
       return { kind: "return", value };
     }
 
     case "break_statement":
-      yield makeStep(node, "statement", functionName, callStack.length, scope, "break;");
+      yield makeStep(node, "statement", callStack, scope, "break;");
       throw new BreakSignal();
 
     case "continue_statement":
-      yield makeStep(node, "statement", functionName, callStack.length, scope, "continue;");
+      yield makeStep(node, "statement", callStack, scope, "continue;");
       throw new ContinueSignal();
 
     case "comment":
@@ -309,7 +351,7 @@ function* executeDeclaration(
   node: SyntaxNode,
   scope: Scope,
   functions: Map<string, SyntaxNode>,
-  callStack: string[],
+  callStack: RuntimeFrame[],
 ): Generator<InterpreterStep, void, void> {
   const type = mapPrimitiveType(node.childForFieldName("type")?.text);
   const declarator = node.childForFieldName("declarator");
@@ -335,7 +377,7 @@ function* evaluate(
   node: SyntaxNode,
   scope: Scope,
   functions: Map<string, SyntaxNode>,
-  callStack: string[],
+  callStack: RuntimeFrame[],
 ): Generator<InterpreterStep, CValue, void> {
   switch (node.type) {
     case "parenthesized_expression": {

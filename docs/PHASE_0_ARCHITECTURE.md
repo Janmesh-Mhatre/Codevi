@@ -1,4 +1,6 @@
-# Codevi — Phase 0 Architecture & Planning Blueprint
+# Code Visualizer — Phase 0 Architecture & Planning Blueprint
+
+> **Naming note:** the project was renamed to **Codevi** after this document was written. Left as-is below as a historical record of the Phase 0 decisions — see the top-level README for the current name and status.
 
 > **Scope:** Architecture and planning only. No application code, components, or project files are included, per the Phase 0 rule. This document is the complete Phase 0 deliverable — Phase 1 begins only after approval.
 
@@ -89,7 +91,7 @@ Each stop event runs this full loop once. A "Run" command simply lets GDB contin
 ## 3. Folder Structure
 
 ```
-codevi/
+code-visualizer/
 ├── src/                       # Frontend — React + TypeScript
 │   ├── components/
 │   │   ├── editor/            # Monaco wrapper, gutter, decorations
