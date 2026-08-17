@@ -30,3 +30,9 @@ export function stepExecution(): void {
 export function resetExecution(): void {
   executionEngine.reset();
 }
+export function provideInput(raw: string): void {
+  executionEngine.provideInput(raw);
+}
+export function cancelInput(): void {
+  executionEngine.cancelInput();
+}

@@ -17,15 +17,35 @@ import {
   InterpreterError,
   isKnownLibraryFunction,
   unsupported,
+  type InputRequest,
+  type InputResumeValue,
   type InterpreterStep,
   type RuntimeFrame,
   type StackFrameSnapshot,
 } from "./types";
+import {
+  extractStringLiteralText,
+  parseScanfFormat,
+  renderPrintf,
+  type PrintfArgument,
+  type ScanfSpecifier,
+} from "./stdio";
 
 const MAX_CALL_DEPTH = 200;
 
 type StatementResult = { kind: "normal" } | { kind: "return"; value: CValue | undefined };
 const NORMAL: StatementResult = { kind: "normal" };
+
+/** Every generator in this file shares this same yield/return/next
+ * shape: it yields InterpreterSteps, eventually returns a CValue (or
+ * void for statement-level generators), and — new in Phase 4.1 — can
+ * receive an InputResumeValue back from whoever is driving it, for the
+ * one case (an input-request yield) that actually needs something sent
+ * back. Every other yield in this file ignores the resume value
+ * entirely; only requestInput() below reads it. See
+ * docs/PHASE_4_1_STDIO.md → "Why generators can pause for real input".
+ */
+type Step<T> = Generator<InterpreterStep, T, InputResumeValue | undefined>;
 
 function truncate(text: string, max = 60): string {
   const singleLine = text.replace(/\s+/g, " ").trim();
@@ -99,13 +119,17 @@ function buildFrameSnapshot(frame: RuntimeFrame, callDepth: number): StackFrameS
 /** Records that the topmost frame is currently paused at `node`/`scope`,
  * then builds the full InterpreterStep — including a snapshot of every
  * active frame, not just this one. This one function is the entire
- * mechanism behind Phase 4's scope-correct, multi-frame call stack. */
+ * mechanism behind Phase 4's scope-correct, multi-frame call stack.
+ * `extra` carries the output text or input request for those two step
+ * kinds (Phase 4.1) — everything else about building the step is
+ * identical regardless of kind. */
 function makeStep(
   node: SyntaxNode,
   kind: InterpreterStep["kind"],
   callStack: RuntimeFrame[],
   scope: Scope,
   description: string,
+  extra?: { output?: string; inputRequest?: InputRequest },
 ): InterpreterStep {
   const top = callStack[callStack.length - 1];
   if (top) {
@@ -122,7 +146,147 @@ function makeStep(
     description,
     variables: topSnapshot ? { ...topSnapshot.parameters, ...topSnapshot.locals } : {},
     callStack: stack,
+    ...extra,
   };
+}
+
+/** Yields an "output" step and returns immediately — ExecutionEngine
+ * appends the text to its output buffer and keeps going without
+ * pausing, the same way it treats a normal statement step during a Run.
+ * See docs/PHASE_4_1_STDIO.md → "Output vs input events". */
+function* emitOutput(node: SyntaxNode, callStack: RuntimeFrame[], scope: Scope, text: string): Step<void> {
+  yield makeStep(node, "output", callStack, scope, `Output: ${truncate(text, 40)}`, { output: text });
+}
+
+/**
+ * Yields an "input-request" step and suspends until the caller resumes
+ * with a real value (or cancellation, e.g. from Reset — see
+ * ExecutionEngine.reset). This is the one place in the whole
+ * interpreter where a yield's result actually matters; every other
+ * yield site just calls `yield makeStep(...)` as a bare statement.
+ */
+function* requestInput(
+  node: SyntaxNode,
+  callStack: RuntimeFrame[],
+  scope: Scope,
+  specifier: ScanfSpecifier,
+  source: string,
+): Step<CValue> {
+  const resume = yield makeStep(node, "input-request", callStack, scope, source, { inputRequest: { specifier, source } });
+  if (!resume || resume.cancelled) {
+    throw new InterpreterError("Input was cancelled", node);
+  }
+  return resume.value;
+}
+
+function extractScanfTargetName(node: SyntaxNode): string | null {
+  if (node.type !== "pointer_expression") return null;
+  const argument = node.childForFieldName("argument");
+  if (!argument || argument.type !== "identifier") return null;
+  return argument.text;
+}
+
+function* callPrintf(
+  node: SyntaxNode,
+  argNodes: SyntaxNode[],
+  scope: Scope,
+  functions: Map<string, SyntaxNode>,
+  callStack: RuntimeFrame[],
+): Step<CValue> {
+  if (argNodes.length === 0) throw new InterpreterError("printf() requires a format string", node);
+  const formatNode = argNodes[0];
+  if (formatNode.type !== "string_literal") {
+    throw new InterpreterError("printf()'s first argument must be a string literal", node);
+  }
+  const formatText = extractStringLiteralText(formatNode);
+
+  const printfArgs: PrintfArgument[] = [];
+  for (const argNode of argNodes.slice(1)) {
+    if (argNode.type === "string_literal") {
+      printfArgs.push({ kind: "string", text: extractStringLiteralText(argNode) });
+    } else {
+      printfArgs.push({ kind: "value", value: yield* evaluate(argNode, scope, functions, callStack) });
+    }
+  }
+
+  let text: string;
+  try {
+    text = renderPrintf(formatText, printfArgs);
+  } catch (error) {
+    throw new InterpreterError(error instanceof Error ? error.message : String(error), node);
+  }
+  yield* emitOutput(node, callStack, scope, text);
+  return { type: "int", value: text.length }; // real printf() returns the character count written
+}
+
+function* callPuts(node: SyntaxNode, argNodes: SyntaxNode[], scope: Scope, callStack: RuntimeFrame[]): Step<CValue> {
+  if (argNodes.length !== 1) throw new InterpreterError("puts() takes exactly one argument", node);
+  const argNode = argNodes[0];
+  const text =
+    argNode.type === "string_literal"
+      ? extractStringLiteralText(argNode)
+      : unsupported(argNode, "puts() only supports a string literal written directly in the call — Codevi has no string variable type yet");
+  yield* emitOutput(node, callStack, scope, `${text}\n`);
+  return { type: "int", value: 0 };
+}
+
+function* callPutchar(
+  node: SyntaxNode,
+  argNodes: SyntaxNode[],
+  scope: Scope,
+  functions: Map<string, SyntaxNode>,
+  callStack: RuntimeFrame[],
+): Step<CValue> {
+  if (argNodes.length !== 1) throw new InterpreterError("putchar() takes exactly one argument", node);
+  const value = yield* evaluate(argNodes[0], scope, functions, callStack);
+  yield* emitOutput(node, callStack, scope, String.fromCharCode(value.value));
+  return { type: "int", value: value.value };
+}
+
+function* callScanf(node: SyntaxNode, argNodes: SyntaxNode[], scope: Scope, callStack: RuntimeFrame[]): Step<CValue> {
+  if (argNodes.length === 0) throw new InterpreterError("scanf() requires a format string", node);
+  const formatNode = argNodes[0];
+  if (formatNode.type !== "string_literal") {
+    throw new InterpreterError("scanf()'s first argument must be a string literal", node);
+  }
+  const formatText = extractStringLiteralText(formatNode);
+
+  let specifiers: ScanfSpecifier[];
+  try {
+    specifiers = parseScanfFormat(formatText);
+  } catch (error) {
+    throw new InterpreterError(error instanceof Error ? error.message : String(error), node);
+  }
+
+  const targetNodes = argNodes.slice(1);
+  if (targetNodes.length < specifiers.length) {
+    throw new InterpreterError(
+      `scanf() format string "${formatText}" expects ${specifiers.length} argument(s) but only ${targetNodes.length} were given`,
+      node,
+    );
+  }
+
+  let matched = 0;
+  for (let i = 0; i < specifiers.length; i++) {
+    const specifier = specifiers[i];
+    const targetNode = targetNodes[i];
+    const variableName = extractScanfTargetName(targetNode);
+    if (!variableName) {
+      unsupported(targetNode, "scanf() arguments must be &variable — the address of a simple, already-declared variable");
+    }
+    const value = yield* requestInput(node, callStack, scope, specifier, `scanf("${formatText}", &${variableName})`);
+    scope.assign(variableName, value);
+    matched++;
+  }
+  return { type: "int", value: matched };
+}
+
+function* callGetchar(node: SyntaxNode, scope: Scope, callStack: RuntimeFrame[]): Step<CValue> {
+  const value = yield* requestInput(node, callStack, scope, "c", "getchar()");
+  // Real getchar() returns int (the character code, or EOF) even though
+  // it reads one character — matching that here rather than returning
+  // "char", since `int ch = getchar();` is the idiomatic C signature.
+  return { type: "int", value: value.value };
 }
 
 /**
@@ -133,7 +297,7 @@ function makeStep(
  * interpreted program's own call stack — see docs/PHASE_3_EXECUTION.md →
  * "Why generators".
  */
-export function* interpretProgram(rootNode: SyntaxNode): Generator<InterpreterStep, CValue | undefined, void> {
+export function* interpretProgram(rootNode: SyntaxNode): Step<CValue | undefined> {
   const functions = collectFunctions(rootNode);
   const mainFn = functions.get("main");
   if (!mainFn) {
@@ -147,7 +311,7 @@ function* callFunction(
   args: CValue[],
   functions: Map<string, SyntaxNode>,
   callStack: RuntimeFrame[],
-): Generator<InterpreterStep, CValue | undefined, void> {
+): Step<CValue | undefined> {
   if (callStack.length >= MAX_CALL_DEPTH) {
     throw new InterpreterError(`Maximum call depth (${MAX_CALL_DEPTH}) exceeded — likely unbounded recursion`, fnNode);
   }
@@ -178,11 +342,18 @@ function* callFunction(
   const result = bodyNode ? yield* executeBlock(bodyNode, scope, functions, callStack) : NORMAL;
   const returnValue = result.kind === "return" ? result.value : undefined;
 
+  // frame.currentScope, not the bare `scope` — the function body is
+  // itself a block, so executeBlock gave it its own child scope (see
+  // executeBlock below); using `scope` here would show only parameters
+  // and silently drop every body-level local, including ones declared
+  // directly in the function body rather than in some nested block.
+  // Found via a real Phase 4.1 test failure — see
+  // docs/PHASE_4_1_STDIO.md → "A real bug this phase's tests caught".
   yield makeStep(
     fnNode,
     "call-exit",
     callStack,
-    scope,
+    frame.currentScope,
     returnValue !== undefined ? `Returning from "${name}" with ${formatValue(returnValue)}` : `Returning from "${name}"`,
   );
 
@@ -195,7 +366,7 @@ function* executeBlock(
   parentScope: Scope,
   functions: Map<string, SyntaxNode>,
   callStack: RuntimeFrame[],
-): Generator<InterpreterStep, StatementResult, void> {
+): Step<StatementResult> {
   const scope = new Scope(parentScope);
   for (const statement of namedChildren(blockNode)) {
     const result = yield* executeStatement(statement, scope, functions, callStack);
@@ -209,7 +380,7 @@ function* executeStatement(
   scope: Scope,
   functions: Map<string, SyntaxNode>,
   callStack: RuntimeFrame[],
-): Generator<InterpreterStep, StatementResult, void> {
+): Step<StatementResult> {
   switch (node.type) {
     case "compound_statement":
       return yield* executeBlock(node, scope, functions, callStack);
@@ -237,8 +408,6 @@ function* executeStatement(
       }
       const alternative = node.childForFieldName("alternative");
       if (alternative) {
-        // `alternative` is an else_clause wrapping either a compound_statement
-        // (`else { ... }`) or a nested if_statement (`else if (...) { ... }`).
         const branch = namedChildren(alternative)[0];
         if (branch) return yield* executeStatement(branch, scope, functions, callStack);
       }
@@ -282,9 +451,9 @@ function* executeStatement(
     }
 
     case "for_statement": {
-      const forScope = new Scope(scope); // the init variable (`for (int i = ...)`) is scoped to the loop
+      const forScope = new Scope(scope);
       const initNode = node.childForFieldName("initializer");
-      const conditionNode = node.childForFieldName("condition"); // NOT parenthesized in a for-loop's own grammar
+      const conditionNode = node.childForFieldName("condition");
       const updateNode = node.childForFieldName("update");
       const bodyNode = node.childForFieldName("body")!;
 
@@ -352,7 +521,7 @@ function* executeDeclaration(
   scope: Scope,
   functions: Map<string, SyntaxNode>,
   callStack: RuntimeFrame[],
-): Generator<InterpreterStep, void, void> {
+): Step<void> {
   const type = mapPrimitiveType(node.childForFieldName("type")?.text);
   const declarator = node.childForFieldName("declarator");
   if (!declarator) unsupported(node, "declaration has no declarator");
@@ -373,12 +542,7 @@ function* executeDeclaration(
   }
 }
 
-function* evaluate(
-  node: SyntaxNode,
-  scope: Scope,
-  functions: Map<string, SyntaxNode>,
-  callStack: RuntimeFrame[],
-): Generator<InterpreterStep, CValue, void> {
+function* evaluate(node: SyntaxNode, scope: Scope, functions: Map<string, SyntaxNode>, callStack: RuntimeFrame[]): Step<CValue> {
   switch (node.type) {
     case "parenthesized_expression": {
       const inner = namedChildren(node)[0];
@@ -404,7 +568,6 @@ function* evaluate(
       const leftNode = node.childForFieldName("left")!;
       const rightNode = node.childForFieldName("right")!;
       const left = yield* evaluate(leftNode, scope, functions, callStack);
-      // Short-circuit: only evaluate the right side when it can matter.
       if (operator === "&&" && !isTruthy(left)) return cBool(false);
       if (operator === "||" && isTruthy(left)) return cBool(true);
       const right = yield* evaluate(rightNode, scope, functions, callStack);
@@ -417,6 +580,9 @@ function* evaluate(
       const argument = yield* evaluate(argumentNode, scope, functions, callStack);
       return applyUnaryOp(operator, argument);
     }
+
+    case "pointer_expression":
+      unsupported(node, "the address-of operator (&) is only supported as a scanf() argument — Codevi has no pointer value type yet");
 
     case "update_expression": {
       const operator = node.childForFieldName("operator")?.text ?? "++";
@@ -448,15 +614,25 @@ function* evaluate(
     case "call_expression": {
       const functionNode = node.childForFieldName("function")!;
       const name = functionNode.text;
+      const argsNode = node.childForFieldName("arguments");
+      const argNodes = argsNode ? namedChildren(argsNode) : [];
+
+      // Standard I/O (Phase 4.1) — handled here, ahead of the
+      // user-defined-function lookup, since these aren't in the
+      // `functions` map and shouldn't be. See docs/PHASE_4_1_STDIO.md.
+      if (name === "printf") return yield* callPrintf(node, argNodes, scope, functions, callStack);
+      if (name === "puts") return yield* callPuts(node, argNodes, scope, callStack);
+      if (name === "putchar") return yield* callPutchar(node, argNodes, scope, functions, callStack);
+      if (name === "scanf") return yield* callScanf(node, argNodes, scope, callStack);
+      if (name === "getchar") return yield* callGetchar(node, scope, callStack);
+
       const fn = functions.get(name);
       if (!fn) {
         if (isKnownLibraryFunction(name)) {
-          unsupported(node, `calls to library functions like "${name}" aren't supported yet — Phase 3 covers user-defined functions and core control flow only`);
+          unsupported(node, `calls to library functions like "${name}" aren't supported yet — Codevi covers user-defined functions, core control flow, and basic stdio only`);
         }
         unsupported(node, `no function named "${name}" is defined`);
       }
-      const argsNode = node.childForFieldName("arguments");
-      const argNodes = argsNode ? namedChildren(argsNode) : [];
       const args: CValue[] = [];
       for (const argNode of argNodes) {
         args.push(yield* evaluate(argNode, scope, functions, callStack));
@@ -466,7 +642,7 @@ function* evaluate(
     }
 
     case "string_literal":
-      unsupported(node, "strings aren't supported yet — Codevi doesn't model pointers/arrays in Phase 3");
+      unsupported(node, "strings aren't supported as general values yet — Codevi doesn't model pointers/arrays (string literals do work as direct arguments to printf/puts)");
 
     default:
       unsupported(node);

@@ -48,6 +48,6 @@ export default defineConfig(async () => ({
 
   test: {
     include: ["tests/**/*.test.ts"],
-    exclude: ["**/node_modules/**", "**/codevi p3/**", "**/codevi p4/**"],
+    exclude: ["**/node_modules/**", "**/codevi p3/**", "**/codevi p4/**", "**/codevi p4.1/**"],
   },
 }));

@@ -1,6 +1,7 @@
 import type { Node as SyntaxNode } from "web-tree-sitter";
 import type { Scope } from "./scope";
 import type { CValue } from "./values";
+import type { ScanfSpecifier } from "./stdio";
 
 /**
  * A live entry on the interpreter's call stack (Phase 4). One of these
@@ -38,6 +39,25 @@ export interface StackFrameSnapshot {
   locals: Record<string, CValue>;
 }
 
+/** What kind of value an interactive input request expects — reuses
+ * stdio.ts's ScanfSpecifier directly (getchar requests use "c") so
+ * there's one vocabulary for "what does this input need to look like",
+ * shared by the request itself and by ExecutionEngine's validation
+ * before ever resuming the interpreter. */
+export interface InputRequest {
+  specifier: ScanfSpecifier;
+  /** What triggered this request, shown in the input UI — e.g.
+   * `scanf("%d", &age)` or `getchar()`. */
+  source: string;
+}
+
+/** What the caller sends back into a suspended `yield` when resuming
+ * after an input request. `cancelled` covers Reset happening while
+ * input is pending (see ExecutionEngine.reset). Every other yield in
+ * the interpreter ignores this value entirely — see
+ * docs/PHASE_4_1_STDIO.md → "Why generators can pause for real input". */
+export type InputResumeValue = { cancelled: true } | { cancelled: false; value: CValue };
+
 /**
  * Internal step record the interpreter yields at each meaningful point
  * (see execute.ts). Holds a live Tree-sitter node reference, which is
@@ -51,7 +71,7 @@ export interface StackFrameSnapshot {
  */
 export interface InterpreterStep {
   node: SyntaxNode;
-  kind: "statement" | "call-enter" | "call-exit";
+  kind: "statement" | "call-enter" | "call-exit" | "output" | "input-request";
   functionName: string;
   callDepth: number;
   description: string;
@@ -62,6 +82,15 @@ export interface InterpreterStep {
   variables: Record<string, CValue>;
   /** New in Phase 4: every currently-active frame, innermost last. */
   callStack: StackFrameSnapshot[];
+  /** Populated only when kind === "output" — text produced by printf/
+   * puts/putchar. ExecutionEngine appends this to its output buffer and
+   * immediately continues (an output event never pauses execution). */
+  output?: string;
+  /** Populated only when kind === "input-request" — scanf/getchar are
+   * asking for a value. ExecutionEngine stops here (does NOT
+   * auto-continue) until provideInput()/cancelInput() resumes the
+   * generator. */
+  inputRequest?: InputRequest;
 }
 
 /** Thrown for anything the interpreter genuinely cannot make sense of —
@@ -93,8 +122,6 @@ export class ReturnSignal {
 }
 
 const KNOWN_LIBRARY_FUNCTIONS = new Set([
-  "printf",
-  "scanf",
   "malloc",
   "free",
   "calloc",

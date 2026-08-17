@@ -50,6 +50,10 @@ function Divider() {
  * executionStore's action functions and disabled when the current
  * execution status makes them meaningless (see
  * docs/PHASE_3_EXECUTION.md → "Toolbar wiring" for the exact rules).
+ * As of Phase 4.1, Run/Step Forward are also disabled while
+ * "waiting-for-input" — a pending scanf()/getchar() can only be
+ * resolved through the Console's input field, not skipped past (see
+ * docs/PHASE_4_1_STDIO.md → "Execution control during input").
  * Step Back stays a placeholder deliberately — true reverse-stepping
  * wasn't in the Phase 3 brief and isn't implemented; it still shows the
  * "not implemented" toast. Open/Save/Settings remain out of scope too.
@@ -61,7 +65,7 @@ export function Toolbar() {
   const status = useExecutionStore((state) => state.status);
 
   const notImplemented = () => showToast("Feature not implemented yet.");
-  const isBusy = status === "preparing" || status === "running";
+  const isBusy = status === "preparing" || status === "running" || status === "waiting-for-input";
 
   return (
     <div className="flex h-12 shrink-0 items-center gap-1 border-b border-border bg-surface-raised px-3">

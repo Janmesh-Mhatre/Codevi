@@ -226,7 +226,7 @@ export function CodeEditor() {
   // run"), so letting the text change underneath it would desync the
   // highlighted line from what's actually executing. Completed/Error/
   // Idle all allow editing again.
-  const isReadOnly = executionStatus === "preparing" || executionStatus === "running" || executionStatus === "paused";
+  const isReadOnly = executionStatus === "preparing" || executionStatus === "running" || executionStatus === "paused" || executionStatus === "waiting-for-input";
 
   // Wait for the IBM Plex Mono webfont to finish loading before rendering
   // the editor. Monaco measures character widths on mount — if the font
@@ -299,7 +299,7 @@ export function CodeEditor() {
   useEffect(() => {
     const collection = decorationsRef.current;
     if (!collection) return;
-    const showHighlight = currentStep && (executionStatus === "running" || executionStatus === "paused");
+    const showHighlight = currentStep && (executionStatus === "running" || executionStatus === "paused" || executionStatus === "waiting-for-input");
     if (!showHighlight) {
       collection.set([]);
       return;

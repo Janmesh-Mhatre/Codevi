@@ -1,8 +1,20 @@
-export type ExecutionStatus = "idle" | "preparing" | "running" | "paused" | "completed" | "error";
+import type { ScanfSpecifier } from "../../languages/c/interpreter/stdio";
+
+export type ExecutionStatus = "idle" | "preparing" | "running" | "paused" | "waiting-for-input" | "completed" | "error";
 
 export interface ExecutionValue {
   type: string;
   value: number;
+}
+
+/** Plain-data version of an interactive input request — see
+ * docs/PHASE_4_1_STDIO.md. `specifier` reuses stdio.ts's ScanfSpecifier
+ * (getchar uses "c") so the UI, the engine's validation, and the
+ * interpreter's request all agree on one vocabulary for "what kind of
+ * value is expected". */
+export interface PendingInput {
+  specifier: ScanfSpecifier;
+  source: string;
 }
 
 /** Plain-data snapshot of one call-stack frame — see
@@ -52,6 +64,18 @@ export interface ExecutionState {
   returnValue: ExecutionValue | null;
   errorMessage: string | null;
   log: ExecutionLogEntry[];
+  /** Accumulated stdout-style program output (printf/puts/putchar) —
+   * new in Phase 4.1. A plain growing string, not a line array, since
+   * printf doesn't necessarily end with a newline. Cleared on Reset. */
+  output: string;
+  /** Set only while status is "waiting-for-input" — what value is
+   * needed and what triggered the request. */
+  pendingInput: PendingInput | null;
+  /** Set when the most recent provideInput() call was rejected as
+   * invalid for the pending request — cleared on the next attempt or
+   * once input succeeds. Distinct from errorMessage: an invalid input
+   * doesn't end execution, it just asks again. */
+  inputError: string | null;
 }
 
 export const INITIAL_EXECUTION_STATE: ExecutionState = {
@@ -61,4 +85,7 @@ export const INITIAL_EXECUTION_STATE: ExecutionState = {
   returnValue: null,
   errorMessage: null,
   log: [],
+  output: "",
+  pendingInput: null,
+  inputError: null,
 };

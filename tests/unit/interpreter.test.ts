@@ -177,15 +177,19 @@ describe("additional interpreter coverage", () => {
     expect(outcome.error).toBeInstanceOf(InterpreterError);
   });
 
-  it("gives a specific message for unsupported library calls like printf, not a generic failure", async () => {
+  it("gives a specific message for unsupported library calls like malloc, not a generic failure", async () => {
+    // printf itself is now supported as of Phase 4.1 — see
+    // tests/unit/stdio.test.ts and tests/unit/stdio-interpreter.test.ts.
+    // malloc remains a recognized-but-unimplemented library function,
+    // which is exactly what this test is checking the error path for.
     const root = await parseC(`
       int main() {
-          printf("hello");
+          malloc(10);
           return 0;
       }
     `);
     const outcome = run(root);
-    expect(outcome.error?.message).toContain("printf");
+    expect(outcome.error?.message).toContain("malloc");
   });
 
   it("yields one step per statement/loop-check, not per sub-expression", async () => {
