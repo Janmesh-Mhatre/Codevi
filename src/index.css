@@ -108,3 +108,16 @@
   background-color: color-mix(in srgb, var(--color-active) 22%, transparent);
   border-left: 3px solid var(--color-active);
 }
+
+/* Visualization panel cards (Phase 5.1) — subtle entrance animation
+   and hover lift for the stack/heap block cards. */
+.codevi-viz-stack-var,
+.codevi-viz-heap-block {
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.codevi-viz-stack-var:hover,
+.codevi-viz-heap-block:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--color-fg) 8%, transparent);
+}
+

@@ -374,25 +374,32 @@ function* callMalloc(node: SyntaxNode, argNodes: SyntaxNode[], scope: Scope, fun
   } catch (error) {
     throw new InterpreterError(error instanceof Error ? error.message : String(error), node);
   }
+  yield makeStep(node, "statement", callStack, scope, `malloc: allocated ${slotCount * sizeOfType(elementType)} bytes at ${formatAddress(address)}`);
   return pointerValue(elementType, address);
 }
 
 function* callCalloc(node: SyntaxNode, argNodes: SyntaxNode[], scope: Scope, functions: Map<string, SyntaxNode>, callStack: RuntimeFrame[]): Step<CValue> {
   if (argNodes.length !== 2) throw new InterpreterError("calloc() takes exactly two arguments (count, element size)", node);
   const countValue = yield* evaluate(argNodes[0], scope, functions, callStack);
-  const sizeArgNode = argNodes[1];
+  const sizeArgValue = yield* evaluate(argNodes[1], scope, functions, callStack);
   if (isPointer(countValue)) throw new InterpreterError("calloc()'s first argument must be a count", argNodes[0]);
+  if (isPointer(sizeArgValue)) throw new InterpreterError("calloc()'s second argument must be a size", argNodes[1]);
   if (countValue.value <= 0) {
     throw new InterpreterError(`calloc() requires a positive element count (got ${countValue.value})`, argNodes[0]);
   }
+  // Infer element type from sizeof() if present, otherwise use the
+  // numeric size value to determine the type.
+  const sizeArgNode = argNodes[1];
   const elementType = sizeArgNode.type === "sizeof_expression" ? sizeofElementType(sizeArgNode) : "int";
+  const elementSize = sizeArgNode.type === "sizeof_expression" ? sizeOfType(elementType) : sizeArgValue.value;
   let address: Address;
   try {
     // calloc zero-initializes — defaultValueForType already produces 0.
-    address = scope.memory.allocateHeap(countValue.value, sizeOfType(elementType), "calloc", defaultValueForType(elementType));
+    address = scope.memory.allocateHeap(countValue.value, elementSize, "calloc", defaultValueForType(elementType));
   } catch (error) {
     throw new InterpreterError(error instanceof Error ? error.message : String(error), node);
   }
+  yield makeStep(node, "statement", callStack, scope, `calloc: allocated ${countValue.value} × ${elementSize} bytes (zero-initialized) at ${formatAddress(address)}`);
   return pointerValue(elementType, address);
 }
 
@@ -405,11 +412,29 @@ function* callRealloc(node: SyntaxNode, argNodes: SyntaxNode[], scope: Scope, fu
 
   const { slotCount, elementType } = inferAllocationShape(argNodes[1], sizeValue.value);
   const oldTarget = pointerArg.target;
-  const oldValues = oldTarget ? scope.memory.slotValues(oldTarget) : [];
+
+  // realloc(NULL, size) is equivalent to malloc(size) per the C standard.
+  if (oldTarget === null) {
+    if (sizeValue.value <= 0) {
+      throw new InterpreterError(`realloc() requires a positive size (got ${sizeValue.value})`, argNodes[1]);
+    }
+    let newAddress: Address;
+    try {
+      newAddress = scope.memory.allocateHeap(slotCount, sizeOfType(elementType), "realloc", defaultValueForType(elementType));
+    } catch (error) {
+      throw new InterpreterError(error instanceof Error ? error.message : String(error), node);
+    }
+    yield makeStep(node, "statement", callStack, scope, `realloc(NULL, ...): allocated ${slotCount * sizeOfType(elementType)} bytes at ${formatAddress(newAddress)}`);
+    return pointerValue(elementType, newAddress);
+  }
+
+  const oldValues = scope.memory.slotValues(oldTarget);
+  const oldAllocation = scope.memory.getAllocation(oldTarget);
+  const oldSize = oldAllocation ? oldAllocation.byteSize : 0;
 
   let newAddress: Address;
   try {
-    if (oldTarget) scope.memory.free(oldTarget);
+    scope.memory.free(oldTarget);
     newAddress = scope.memory.allocateHeap(slotCount, sizeOfType(elementType), "realloc", defaultValueForType(elementType));
   } catch (error) {
     throw new InterpreterError(error instanceof Error ? error.message : String(error), node);
@@ -418,6 +443,7 @@ function* callRealloc(node: SyntaxNode, argNodes: SyntaxNode[], scope: Scope, fu
   for (let i = 0; i < Math.min(oldValues.length, slotCount); i++) {
     scope.memory.write({ ...newAddress, slot: i }, oldValues[i]);
   }
+  yield makeStep(node, "statement", callStack, scope, `realloc: resized ${formatAddress(oldTarget)} (${oldSize}B) → ${formatAddress(newAddress)} (${slotCount * sizeOfType(elementType)}B)`);
   return pointerValue(elementType, newAddress);
 }
 
@@ -434,6 +460,7 @@ function* callFree(node: SyntaxNode, argNodes: SyntaxNode[], scope: Scope, funct
   } catch (error) {
     throw new InterpreterError(error instanceof Error ? error.message : String(error), node);
   }
+  yield makeStep(node, "statement", callStack, scope, `free: released ${formatAddress(value.target)}`);
   return scalar("int", 0);
 }
 
@@ -788,12 +815,36 @@ function* evaluate(node: SyntaxNode, scope: Scope, functions: Map<string, Syntax
 
       if (isPointer(left) || isPointer(right)) {
         if (isPointer(left) && isPointer(right)) {
+          // Pointer subtraction: p - q → integer distance (only within same block).
+          if (operator === "-") {
+            if (left.target === null || right.target === null) {
+              throw new InterpreterError("Pointer subtraction involving a NULL pointer", node);
+            }
+            if (left.target.space !== "heap" || right.target.space !== "heap" || left.target.id !== right.target.id) {
+              throw new InterpreterError("Pointer subtraction is only defined between pointers into the same allocation", node);
+            }
+            return scalar("int", left.target.slot - right.target.slot);
+          }
+          // Relational comparison within same block.
+          if (operator === "<" || operator === ">" || operator === "<=" || operator === ">=") {
+            if (left.target === null || right.target === null) {
+              throw new InterpreterError("Relational pointer comparison involving a NULL pointer", node);
+            }
+            if (left.target.space !== right.target.space || left.target.id !== right.target.id) {
+              throw new InterpreterError("Relational pointer comparison is only defined between pointers into the same allocation", node);
+            }
+            const diff = left.target.slot - right.target.slot;
+            if (operator === "<") return cBool(diff < 0);
+            if (operator === ">") return cBool(diff > 0);
+            if (operator === "<=") return cBool(diff <= 0);
+            return cBool(diff >= 0); // ">="
+          }
           return comparePointers(operator, left, right);
         }
         // pointer +/- integer (either order) is pointer arithmetic.
         const pointer = isPointer(left) ? left : (right as CPointerValue);
         const offsetValue = isPointer(left) ? right : left;
-        if (isPointer(offsetValue)) unsupported(node, "arithmetic between two pointers (other than == / !=) isn't supported");
+        if (isPointer(offsetValue)) unsupported(node, "arithmetic between two pointers (other than subtraction and comparison) isn't supported");
         if (operator === "+") return pointerArithmetic(pointer, offsetValue.value, scope, node);
         if (operator === "-" && isPointer(left)) return pointerArithmetic(pointer, -offsetValue.value, scope, node);
         unsupported(node, `"${operator}" is not supported between a pointer and a number`);
@@ -885,8 +936,18 @@ function* evaluate(node: SyntaxNode, scope: Scope, functions: Map<string, Syntax
         unsupported(leftNode, "only assignment to simple variables or *pointer is supported (no arrays)");
       }
       const right = yield* evaluate(rightNode, scope, functions, callStack);
-      const newValue =
-        operator === "=" ? right : applyBinaryOp(operator.slice(0, -1), scope.lookup(leftNode.text) as CScalarValue, right as CScalarValue);
+      const current = scope.lookup(leftNode.text);
+      let newValue: CValue;
+      if (operator === "=") {
+        newValue = right;
+      } else if (current && isPointer(current) && (operator === "+=" || operator === "-=")) {
+        // Pointer compound assignment: p += n / p -= n
+        if (isPointer(right)) throw new InterpreterError(`Cannot use "${operator}" with two pointers`, node);
+        const offset = operator === "+=" ? right.value : -right.value;
+        newValue = pointerArithmetic(current, offset, scope, node);
+      } else {
+        newValue = applyBinaryOp(operator.slice(0, -1), current as CScalarValue, right as CScalarValue);
+      }
       scope.assign(leftNode.text, newValue);
       if (newValue.kind === "pointer") scope.memory.recordPointerAssign(leftNode.text, newValue.target);
       return newValue;
