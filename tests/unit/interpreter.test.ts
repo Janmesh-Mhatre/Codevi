@@ -1,7 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { parseC, run, runCollectingSteps } from "./helpers/interpreterTestHelpers";
+import { afterEach, describe, expect, it } from "vitest";
+import { cleanupParsedTrees, parseC, run, runCollectingSteps } from "./helpers/interpreterTestHelpers";
 import { CRuntimeError } from "../../src/languages/c/interpreter/values";
 import { InterpreterError } from "../../src/languages/c/interpreter/types";
+
+afterEach(cleanupParsedTrees);
 
 // The six scenarios explicitly required by the Phase 3 prompt.
 describe("Phase 3 required scenarios", () => {
@@ -14,7 +16,7 @@ describe("Phase 3 required scenarios", () => {
     `);
     const outcome = run(root);
     expect(outcome.error).toBeUndefined();
-    expect(outcome.result).toEqual({ type: "int", value: 10 });
+    expect(outcome.result).toEqual({ kind: "scalar", type: "int", value: 10 });
   });
 
   it("sequential statements", async () => {
@@ -27,7 +29,7 @@ describe("Phase 3 required scenarios", () => {
       }
     `);
     const outcome = run(root);
-    expect(outcome.result).toEqual({ type: "int", value: 30 });
+    expect(outcome.result).toEqual({ kind: "scalar", type: "int", value: 30 });
   });
 
   it("conditional execution", async () => {
@@ -41,7 +43,7 @@ describe("Phase 3 required scenarios", () => {
       }
     `);
     const outcome = run(root);
-    expect(outcome.result).toEqual({ type: "int", value: 20 });
+    expect(outcome.result).toEqual({ kind: "scalar", type: "int", value: 20 });
   });
 
   it("loop execution", async () => {
@@ -55,7 +57,7 @@ describe("Phase 3 required scenarios", () => {
       }
     `);
     const outcome = run(root);
-    expect(outcome.result).toEqual({ type: "int", value: 10 }); // 0+1+2+3+4
+    expect(outcome.result).toEqual({ kind: "scalar", type: "int", value: 10 }); // 0+1+2+3+4
   });
 
   it("invalid code fails gracefully at the parser, before the interpreter ever runs", async () => {
@@ -86,7 +88,7 @@ describe("additional interpreter coverage", () => {
       int square(int n) { return n * n; }
       int main() { return square(4); }
     `);
-    expect(run(root).result).toEqual({ type: "int", value: 16 });
+    expect(run(root).result).toEqual({ kind: "scalar", type: "int", value: 16 });
   });
 
   it("supports recursion", async () => {
@@ -97,7 +99,7 @@ describe("additional interpreter coverage", () => {
       }
       int main() { return factorial(5); }
     `);
-    expect(run(root).result).toEqual({ type: "int", value: 120 });
+    expect(run(root).result).toEqual({ kind: "scalar", type: "int", value: 120 });
   });
 
   it("supports else-if chains", async () => {
@@ -111,7 +113,7 @@ describe("additional interpreter coverage", () => {
           return result;
       }
     `);
-    expect(run(root).result).toEqual({ type: "int", value: 2 });
+    expect(run(root).result).toEqual({ kind: "scalar", type: "int", value: 2 });
   });
 
   it("supports break and continue", async () => {
@@ -130,7 +132,7 @@ describe("additional interpreter coverage", () => {
           return sum;
       }
     `);
-    expect(run(root).result).toEqual({ type: "int", value: 12 });
+    expect(run(root).result).toEqual({ kind: "scalar", type: "int", value: 12 });
   });
 
   it("supports do-while (body runs at least once)", async () => {
@@ -141,14 +143,14 @@ describe("additional interpreter coverage", () => {
           return i;
       }
     `);
-    expect(run(root).result).toEqual({ type: "int", value: 5 });
+    expect(run(root).result).toEqual({ kind: "scalar", type: "int", value: 5 });
   });
 
   it("truncates integer division toward zero like C, not like JS", async () => {
     const root = await parseC(`
       int main() { return 7 / 2; }
     `);
-    expect(run(root).result).toEqual({ type: "int", value: 3 });
+    expect(run(root).result).toEqual({ kind: "scalar", type: "int", value: 3 });
   });
 
   it("raises a clean runtime error on integer division by zero instead of producing Infinity", async () => {
@@ -165,11 +167,13 @@ describe("additional interpreter coverage", () => {
     expect(outcome.error).toBeInstanceOf(InterpreterError);
   });
 
-  it("reports source position on unsupported constructs (pointers) instead of crashing", async () => {
+  it("reports source position on unsupported constructs (arrays) instead of crashing", async () => {
+    // Pointers themselves are now supported as of Phase 5 — see
+    // tests/unit/pointers.test.ts. Arrays remain unimplemented, which is
+    // exactly what this test is checking the error path for.
     const root = await parseC(`
       int main() {
-          int a = 5;
-          int* p = &a;
+          int arr[5];
           return 0;
       }
     `);
@@ -177,19 +181,21 @@ describe("additional interpreter coverage", () => {
     expect(outcome.error).toBeInstanceOf(InterpreterError);
   });
 
-  it("gives a specific message for unsupported library calls like malloc, not a generic failure", async () => {
-    // printf itself is now supported as of Phase 4.1 — see
-    // tests/unit/stdio.test.ts and tests/unit/stdio-interpreter.test.ts.
-    // malloc remains a recognized-but-unimplemented library function,
-    // which is exactly what this test is checking the error path for.
+  it("gives a specific message for unsupported library calls like strlen, not a generic failure", async () => {
+    // printf (Phase 4.1) and malloc/calloc/realloc/free (Phase 5) are
+    // now supported — see tests/unit/stdio.test.ts and
+    // tests/unit/pointers.test.ts. strlen remains a recognized-but-
+    // unimplemented library function (it needs real string support,
+    // which Codevi still doesn't have), which is exactly what this test
+    // is checking the error path for.
     const root = await parseC(`
       int main() {
-          malloc(10);
+          strlen("hi");
           return 0;
       }
     `);
     const outcome = run(root);
-    expect(outcome.error?.message).toContain("malloc");
+    expect(outcome.error?.message).toContain("strlen");
   });
 
   it("yields one step per statement/loop-check, not per sub-expression", async () => {

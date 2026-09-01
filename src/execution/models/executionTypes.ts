@@ -1,11 +1,16 @@
 import type { ScanfSpecifier } from "../../languages/c/interpreter/stdio";
+import type { Address } from "../../languages/c/interpreter/memory";
 
 export type ExecutionStatus = "idle" | "preparing" | "running" | "paused" | "waiting-for-input" | "completed" | "error";
 
-export interface ExecutionValue {
-  type: string;
-  value: number;
-}
+/** Plain-data value shape — mirrors the interpreter's CValue
+ * (scalar | pointer) exactly, just fully serializable: `type` is
+ * always a display string ("int", "int*", "int**", ...) and pointer
+ * targets are Codevi's own simulated Address (never a real number),
+ * or null for NULL. See docs/PHASE_5_POINTERS.md. */
+export type ExecutionValue =
+  | { kind: "scalar"; type: string; value: number }
+  | { kind: "pointer"; type: string; target: Address | null };
 
 /** Plain-data version of an interactive input request — see
  * docs/PHASE_4_1_STDIO.md. `specifier` reuses stdio.ts's ScanfSpecifier
@@ -26,8 +31,22 @@ export interface StackFrame {
   line: number;
   parameters: Record<string, ExecutionValue>;
   locals: Record<string, ExecutionValue>;
+  /** Each variable's own storage address (new in Phase 5) — see
+   * docs/PHASE_5_POINTERS.md → "Memory Panel". */
+  addresses: Record<string, Address>;
   /** True for exactly the topmost (currently executing/paused-at) frame. */
   isActive: boolean;
+}
+
+/** Plain-data snapshot of one heap allocation, active or freed — new in
+ * Phase 5. See docs/PHASE_5_POINTERS.md → "Heap visualization". */
+export interface HeapBlock {
+  address: Address;
+  slotCount: number;
+  byteSize: number;
+  active: boolean;
+  origin: "malloc" | "calloc" | "realloc";
+  values: ExecutionValue[];
 }
 
 /** Plain-data snapshot of "where execution currently is" — independent
@@ -44,11 +63,16 @@ export interface ExecutionStep {
   callDepth: number;
   description: string;
   variables: Record<string, ExecutionValue>;
-  /** New in Phase 4: every currently-active frame, innermost/active
-   * last. Variables above is always derivable from this (the active
-   * frame's parameters+locals merged) — kept for continuity with Phase
-   * 3 consumers rather than as an independently-tracked value. */
+  /** Every currently-active frame, innermost/active last. `variables`
+   * above is always derivable from this (the active frame's
+   * parameters+locals merged) — kept for continuity with Phase 3
+   * consumers rather than as an independently-tracked value. */
   callStack: StackFrame[];
+  /** Every heap allocation made so far this run, active or freed — new
+   * in Phase 5. Freed blocks are kept (not removed) so the
+   * visualization can show a block being freed rather than just
+   * vanishing. */
+  heap: HeapBlock[];
 }
 
 export interface ExecutionLogEntry {

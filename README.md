@@ -9,15 +9,17 @@ execute — built with React, TypeScript, and Rust/Tauri (currently run as
 a browser app; native packaging is postponed). See
 `docs/PHASE_0_ARCHITECTURE.md` for the original blueprint,
 `docs/PHASE_2_PARSER.md` for the parser, `docs/PHASE_3_EXECUTION.md` for
-the execution engine, and `docs/PHASE_4_VISUALIZATION.md` for the panels
-below.
+the execution engine, `docs/PHASE_4_VISUALIZATION.md` for the Variables/
+Stack/Memory panels, `docs/PHASE_4_1_STDIO.md` for I/O, and
+`docs/PHASE_5_POINTERS.md` for pointers and dynamic memory below.
 
-**Status: Phase 4 — Memory, Variables & Stack Visualization.** Variables,
-a conceptual memory view, and a real multi-frame call stack now update
-live as you run or step through code, all synchronized with the existing
-current-line highlight. Still no pointers, arrays, or heap — see
-[What's implemented](#whats-implemented) below. Stopping here per the
-Phase 4 brief, pending review before Phase 5.
+**Status: Phase 5 — Pointers & Dynamic Memory.** `&`, `*`,
+pointer-to-pointer, NULL, `malloc`/`calloc`/`realloc`/`free`,
+use-after-free/double-free detection, pointer arithmetic, and `sizeof`
+all work, with real (simulated, never actual hardware) addresses visible
+in an extended Memory panel. Still no arrays or structs — see
+[What's implemented](#whats-implemented) below. Stopping here pending
+review.
 
 ---
 
@@ -27,8 +29,8 @@ Phase 4 brief, pending review before Phase 5.
 
 - [Node.js](https://nodejs.org/) 20 or later, and npm
 
-Browser-based by design, same as Phases 2–3 — native/Tauri packaging is
-explicitly postponed project-wide.
+Browser-based by design — native/Tauri packaging is explicitly postponed
+project-wide.
 
 ### Run it (browser)
 
@@ -37,9 +39,19 @@ npm install
 npm run dev
 ```
 
-Open the printed `localhost` URL. Run or Step Forward through a program
-and watch the Variables and Memory panels (bottom right) and the Stack
-tab (top right, alongside AST) update in sync with the highlighted line.
+Open the printed `localhost` URL. Try:
+
+```c
+int main(void) {
+    int *ptr = malloc(sizeof(int));
+    *ptr = 25;
+    free(ptr);
+    return 0;
+}
+```
+
+Step through it and watch the Memory panel (bottom right) — the heap
+block appears, then shows struck-through once freed.
 
 ### Run the tests
 
@@ -48,9 +60,10 @@ npm install
 npm test
 ```
 
-25 cases (Vitest): the 18 from Phase 3, unchanged, plus 7 new ones
-verifying the call-stack/scope data this phase's panels depend on. See
-`docs/PHASE_4_VISUALIZATION.md` → "Tests".
+96 cases (Vitest): 67 from Phases 3/4/4.1 (unchanged except one
+intentionally corrected assertion — see `docs/PHASE_5_POINTERS.md`),
+plus 29 new ones covering pointers, dynamic memory, and memory-safety
+errors.
 
 ### Run it as a desktop window (optional, needs Rust — untouched since Phase 1)
 
@@ -62,31 +75,46 @@ npm run tauri dev
 
 ## What's implemented
 
-### Phase 4 — Memory, Variables & Stack Visualization
+### Phase 5 — Pointers & Dynamic Memory
 
 | Area | Status |
 |---|---|
-| Variables panel: name/type/value/scope for the active frame, live | done |
-| Subtle highlight on a variable's row when its value changes | done |
-| Conceptual Memory panel (variable/storage view, no fabricated addresses) | done |
-| Stack panel: every active call frame, innermost/active first, with its own parameters and locals | done |
-| Frames appear on function entry and disappear on return, including through recursion | done |
-| Block-scoped variables appear/disappear correctly (verified against the brief's own scope example) | done |
-| All panels read one shared execution snapshot, so they can't fall out of sync with the highlighted line | done |
-| Tests covering every scenario in the Phase 4 brief | done |
-| `docs/PHASE_4_VISUALIZATION.md` | done |
+| `&` (address-of) and `*` (dereference), as both a read and an assignment target | done |
+| Pointer-to-pointer, to arbitrary depth | done |
+| NULL: safe default for an uninitialized pointer, comparison, clear error on dereference | done |
+| `malloc`, `calloc` (zero-init), `realloc` (preserves contents), `free` (including `free(NULL)` as a no-op) | done |
+| Use-after-free and double-free detection, each a specific error | done |
+| Pointer arithmetic (`+`, `++`, `--`) across a malloc'd block, bounds-checked | done |
+| `sizeof(TYPE)` and `sizeof(variable)` | done |
+| Pointer function parameters, with visible write-through to the caller | done |
+| Best-effort leak reporting at program end | done |
+| Memory panel extended with simulated stack/heap addresses and pointer targets | done |
+| Tests covering every scenario in the Phase 5 brief | done |
+| `docs/PHASE_5_POINTERS.md`, including a full real debugging story | done |
 
-Explicitly **not** implemented, per the Phase 4 brief: pointer/heap/
-dynamic-memory visualization, real memory addresses, a full debugger,
-breakpoints, watch expressions, AI features, native execution/packaging,
-multi-language support, animations, or any Phase 5+ feature.
+Explicitly **not** implemented: arrays as a language construct, structs/
+unions, pointer casts, function pointers, real hardware memory
+addresses (everything is simulated and labeled as such), a full leak
+detector, AI features, native execution/packaging, multi-language
+support.
+
+### Phase 4.1 — Basic C Standard I/O (unchanged this phase)
+
+| Area | Status |
+|---|---|
+| `printf`/`scanf`/`puts`/`putchar`/`getchar`, real pause-for-input | done |
+
+### Phase 4 — Memory, Variables & Stack Visualization (unchanged this phase)
+
+| Area | Status |
+|---|---|
+| Variables/Memory/Stack panels, scope-correct, synchronized with execution | done |
 
 ### Phase 3 — Execution Engine (unchanged this phase)
 
 | Area | Status |
 |---|---|
 | In-browser generator-based C interpreter; Run/Pause/Step Forward/Reset | done |
-| Current-line highlight; infinite-loop/runaway-recursion protection | done |
 
 ### Phase 2 — Parser Integration (unchanged this phase)
 
@@ -107,82 +135,78 @@ multi-language support, animations, or any Phase 5+ feature.
 ```
 codevi/
 ├── src/
-│   ├── components/
-│   │   ├── layout/AppShell.tsx      # + "Stack" tab alongside AST/Visualization
-│   │   ├── toolbar/, editor/         # Unchanged this phase
-│   │   ├── panels/
-│   │   │   ├── VariablePanel.tsx      # Placeholder -> functional
-│   │   │   ├── MemoryPanel.tsx        # Placeholder -> functional
-│   │   │   ├── StackPanel.tsx         # New
-│   │   │   └── (Explanation/Console/AST/Visualization unchanged)
-│   │   └── common/
-│   ├── state/executionStore.ts       # Unchanged interface; now carries callStack too
+│   ├── components/panels/
+│   │   ├── MemoryPanel.tsx     # Rewritten — simulated stack/heap addresses, pointer targets
+│   │   ├── VariablePanel.tsx    # + pointer value/type display
+│   │   ├── StackPanel.tsx       # + pointer value display
+│   │   └── (everything else unchanged this phase)
 │   ├── execution/
-│   │   ├── engine/ExecutionEngine.ts   # + per-frame conversion (toStackFrame)
-│   │   ├── models/executionTypes.ts    # + StackFrame, ExecutionValue
-│   │   └── utils/                       # New this phase
-│   │       ├── formatValue.ts
-│   │       └── useChangedKeys.ts
-│   ├── languages/c/interpreter/
-│   │   ├── types.ts          # + RuntimeFrame, StackFrameSnapshot
-│   │   ├── interpreter.ts    # Call stack is now RuntimeFrame[], not string[]
-│   │   └── values.ts, scope.ts   # Unchanged
-│   └── services/parserService.ts   # Unchanged
+│   │   ├── engine/ExecutionEngine.ts    # + heap/address conversion
+│   │   ├── models/executionTypes.ts     # + HeapBlock, pointer-aware ExecutionValue, StackFrame.addresses
+│   │   └── utils/                        # + pointer-aware formatting/change-detection
+│   └── languages/c/interpreter/
+│       ├── memory.ts          # New — MemoryModel: simulated addresses, stack + heap
+│       ├── values.ts          # CValue is now CScalarValue | CPointerValue
+│       ├── scope.ts           # Address-based storage via MemoryModel
+│       ├── types.ts           # InterpreterError no longer holds a live WASM node (see docs)
+│       └── interpreter.ts     # &, *, malloc/calloc/realloc/free, sizeof, pointer arithmetic
 ├── tests/unit/
-│   ├── interpreter.test.ts   # Phase 3, unchanged, still passing
-│   └── callStack.test.ts     # New — see docs/PHASE_4_VISUALIZATION.md
+│   ├── pointersBasics.test.ts, pointersHeap.test.ts, pointersFreeErrors.test.ts,
+│   │   pointersArithmetic.test.ts, pointersMisc.test.ts   # New — 29 cases total
+│   └── (all Phase 3/4/4.1 files unchanged except one corrected assertion)
 ├── docs/
 │   ├── PHASE_0_ARCHITECTURE.md
 │   ├── PHASE_2_PARSER.md
 │   ├── PHASE_3_EXECUTION.md
-│   └── PHASE_4_VISUALIZATION.md
-└── package.json   # No new dependencies this phase
+│   ├── PHASE_4_VISUALIZATION.md
+│   ├── PHASE_4_1_STDIO.md
+│   └── PHASE_5_POINTERS.md
+├── vitest.config.ts   # New — see docs/PHASE_5_POINTERS.md for why
+└── package.json        # No new dependencies this phase
 ```
 
 ---
 
 ## Component hierarchy
 
-Unchanged in shape from Phase 3 except one addition: `StackPanel` joins
-`AstViewerPanel`/`VisualizationPanel` in the top-right tab group.
-`VariablePanel` and `MemoryPanel` occupy their exact Phase 1 layout
-slots with new content. Everything else — `Toolbar`, `CodeEditor`,
-`ExplanationPanel`, `ConsolePanel`, `ErrorDialog`, `Toast` — is untouched.
+Unchanged in shape from Phase 4.1 — no new components. `MemoryPanel` was
+rewritten (same slot, same panel); `VariablePanel`/`StackPanel` gained
+small pointer-display additions. Everything else is untouched.
 
 ---
 
 ## State management
 
-No new stores this phase. `useExecutionStore`'s `currentStep` simply
-carries more information now (`callStack: StackFrame[]`, per
-`docs/PHASE_4_VISUALIZATION.md`) — every panel reads from this one
-shared object, which is what keeps them synchronized with each other and
-with the editor's current-line highlight by construction rather than by
-extra coordination logic.
+No new stores. `useExecutionStore`'s `currentStep` carries more
+information now (`heap: HeapBlock[]`, and each `StackFrame` gained
+`addresses`) — read the same way every other execution state has been
+read since Phase 3.
 
 ---
 
 ## Validation notes
 
 - `npx tsc --noEmit`, `npm run build`, and `npm test` all pass.
-- The call-stack/scope extension was validated the same way Phase 3's
-  interpreter was: real test assertions against actual computed
-  results (which frames exist, in what order, with what parameter
-  values) for every scenario the Phase 4 brief lists, not just "it
-  compiles." See `docs/PHASE_4_VISUALIZATION.md` → "Tests".
-- No interactive browser check of the panels' visual appearance or the
-  variable-change highlight animation — same sandbox limitation as every
-  prior phase (no display server here). `npm run dev` on your machine is
-  the first interactive check.
-- Regression risk was kept deliberately small: `CodeEditor.tsx`,
-  `Toolbar.tsx`, and `ConsolePanel.tsx` were not touched this phase — see
-  `docs/PHASE_4_VISUALIZATION.md` → "Regression testing" for the full
-  list of what was and wasn't modified.
+- Every pointer/memory scenario was validated by actually running it —
+  first via a standalone Node script directly against the compiled
+  interpreter (to rule out the interpreter before touching any test
+  tooling), then as a permanent Vitest suite.
+- This phase's test suite surfaced a genuine, non-obvious bug — not in
+  the pointer/memory logic itself, but in how errors were represented
+  (`InterpreterError` was holding a live WASM node, the only place in
+  the whole project doing so). Root-caused and fixed at the source
+  rather than worked around. Full account, including the approaches
+  tried and discarded along the way, in `docs/PHASE_5_POINTERS.md` →
+  "A test-infrastructure crash, not an application bug".
+- No interactive browser check of the extended Memory panel's appearance
+  — same sandbox limitation as every prior phase (no display server
+  here). `npm run dev` on your machine is the first interactive check.
 
 ### Known advisory / bundle-size tradeoff (carried over, unchanged)
 
-Unchanged from Phase 1/2 — see those phases' notes. No new frontend
-dependencies were added this phase.
+Unchanged from Phase 1/2 — see those phases' notes. No new runtime
+dependencies were added this phase (`vitest.config.ts` configures the
+existing dev-only test runner; nothing new was installed).
 
 ---
 
@@ -190,21 +214,19 @@ dependencies were added this phase.
 
 | Placeholder today | Becomes real in | Reference |
 |---|---|---|
-| Visualization tab (graphical stack/memory diagram) | Later — this phase covers the tabular data view; a boxes-and-arrows diagram is bigger scope | `docs/PHASE_4_VISUALIZATION.md` → "Layout" |
-| Pointers, arrays, structs, addresses, heap | Needs a new value representation in `interpreter/values.ts` first | `docs/PHASE_4_VISUALIZATION.md` → "Known limitations" |
-| Global variables | Not yet supported by the Phase 3 interpreter | `docs/PHASE_3_EXECUTION.md` |
+| Visualization tab (graphical stack/heap diagram with arrows) | Later — `ExecutionStep.heap` and `StackFrame.addresses` already have everything such a diagram would need | `docs/PHASE_5_POINTERS.md` → "How Phase 6 can build on this" |
+| Arrays, structs | Would need real design work — pointer arithmetic currently only works across a malloc'd block for exactly this reason | `docs/PHASE_5_POINTERS.md` → "Known limitations" |
 | `ExplanationPanel`'s static line | Phase 10 | Blueprint section 1 |
 | Step Back | Not scoped in any phase yet | `docs/PHASE_3_EXECUTION.md` |
-| `useChangedKeys` | Generic enough to reuse anywhere else "changed since last step" matters | `docs/PHASE_4_VISUALIZATION.md` |
 
 ---
 
 ## Remaining work
 
-Nothing from the Phase 4 brief was skipped. Every deliverable (Variables
-panel, Stack visualization, conceptual Memory panel, execution-state
-synchronization, variable-change indication, function-call
-visualization, scope handling, tests, documentation, an unsupported-
-features list) is implemented and verified as far as this sandboxed
-environment allows — the one open item is the same as every prior
-phase's: a live, interactive check on your own machine via `npm run dev`.
+Nothing from the Phase 5 brief was skipped. Every deliverable (pointers,
+dereferencing, pointer-to-pointer, NULL handling, dynamic memory,
+use-after-free/double-free detection, pointer arithmetic, the extended
+Memory panel, tests, documentation, a limitations list) is implemented
+and verified as far as this sandboxed environment allows — the one open
+item is the same as every prior phase's: a live, interactive check on
+your own machine via `npm run dev`.

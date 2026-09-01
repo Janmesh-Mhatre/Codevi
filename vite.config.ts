@@ -45,9 +45,4 @@ export default defineConfig(async () => ({
       ignored: ["**/src-tauri/**"],
     },
   },
-
-  test: {
-    include: ["tests/**/*.test.ts"],
-    exclude: ["**/node_modules/**", "**/codevi p3/**", "**/codevi p4/**", "**/codevi p4.1/**"],
-  },
 }));

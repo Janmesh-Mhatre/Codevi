@@ -1,6 +1,6 @@
 import { Parser, Language } from "web-tree-sitter";
 import path from "node:path";
-import type { Node as SyntaxNode } from "web-tree-sitter";
+import type { Node as SyntaxNode, Tree } from "web-tree-sitter";
 import { interpretProgram } from "../../../src/languages/c/interpreter/interpreter";
 import type { CValue } from "../../../src/languages/c/interpreter/values";
 import type { InterpreterStep } from "../../../src/languages/c/interpreter/types";
@@ -8,8 +8,16 @@ import type { InterpreterStep } from "../../../src/languages/c/interpreter/types
 let parserPromise: Promise<InstanceType<typeof Parser>> | null = null;
 
 /** Lazily initializes one shared parser instance for all tests in a run
- * — re-loading the WASM runtime per test would be needlessly slow. */
-function getParser(): Promise<InstanceType<typeof Parser>> {
+ * — re-loading the WASM runtime per test would be needlessly slow, and
+ * (see docs/PHASE_5_POINTERS.md -> "A test-infrastructure crash, not an
+ * application bug") web-tree-sitter's WASM bindings turned out not to
+ * tolerate multiple independent instantiations within one process well.
+ * Exported so every test file shares this exact instance rather than
+ * each one initializing its own — see vitest.config.ts's `isolate:
+ * false`, which is what makes a module-level singleton like this one
+ * actually stay shared across test files instead of being reset per
+ * file. */
+export function getParser(): Promise<InstanceType<typeof Parser>> {
   if (!parserPromise) {
     parserPromise = (async () => {
       await Parser.init({
@@ -24,11 +32,28 @@ function getParser(): Promise<InstanceType<typeof Parser>> {
   return parserPromise;
 }
 
+/** Every tree parseC() has produced since the last cleanupParsedTrees()
+ * call. Each Tree wraps WASM memory that (as in parserService.ts —
+ * see docs/PHASE_2_PARSER.md) isn't reclaimed by JS's own garbage
+ * collector; without tracking + deleting them, a test file with many
+ * `it()` blocks accumulates one leaked tree per test, which eventually
+ * makes Vitest's own worker/IPC message serialization fail with a stack
+ * overflow — a real issue this suite ran into directly while building
+ * Phase 5's tests. Call cleanupParsedTrees() in an afterEach. */
+const activeTrees: Tree[] = [];
+
 export async function parseC(source: string): Promise<SyntaxNode> {
   const parser = await getParser();
   const tree = parser.parse(source);
   if (!tree) throw new Error("parse() returned null");
+  activeTrees.push(tree);
   return tree.rootNode;
+}
+
+export function cleanupParsedTrees(): void {
+  while (activeTrees.length > 0) {
+    activeTrees.pop()?.delete();
+  }
 }
 
 export interface RunOutcome {

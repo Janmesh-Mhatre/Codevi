@@ -26,30 +26,3 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-
-# Tauri build output
-src-tauri/target/
-
-# Rust backup files
-*.rs.bk
-
-# Test coverage
-coverage/
-
-# Cache directories
-.cache/
-
-# Temporary files
-tmp/
-temp/
-
-# Build cache
-*.tsbuildinfo
-
-# OS files
-Thumbs.db
-Desktop.ini
-
-# macOS
-.AppleDouble
-.LSOverride

@@ -1,13 +1,22 @@
 import type { Node as SyntaxNode } from "web-tree-sitter";
 import { Scope } from "./scope";
+import { MemoryModel, formatAddress, sizeOfType, type Address } from "./memory";
 import {
   applyBinaryOp,
   applyUnaryOp,
   cBool,
+  comparePointers,
+  defaultPointerValue,
   defaultValueForType,
+  isPointer,
   isTruthy,
   parseCharLiteral,
   parseNumberLiteral,
+  pointerValue,
+  scalar,
+  type CPointerType,
+  type CPointerValue,
+  type CScalarValue,
   type CType,
   type CValue,
 } from "./values";
@@ -36,15 +45,8 @@ const MAX_CALL_DEPTH = 200;
 type StatementResult = { kind: "normal" } | { kind: "return"; value: CValue | undefined };
 const NORMAL: StatementResult = { kind: "normal" };
 
-/** Every generator in this file shares this same yield/return/next
- * shape: it yields InterpreterSteps, eventually returns a CValue (or
- * void for statement-level generators), and — new in Phase 4.1 — can
- * receive an InputResumeValue back from whoever is driving it, for the
- * one case (an input-request yield) that actually needs something sent
- * back. Every other yield in this file ignores the resume value
- * entirely; only requestInput() below reads it. See
- * docs/PHASE_4_1_STDIO.md → "Why generators can pause for real input".
- */
+/** See docs/PHASE_4_1_STDIO.md → "Why generators can pause for real
+ * input" for the InputResumeValue half of this; unchanged in Phase 5. */
 type Step<T> = Generator<InterpreterStep, T, InputResumeValue | undefined>;
 
 function truncate(text: string, max = 60): string {
@@ -71,7 +73,39 @@ function mapPrimitiveType(text: string | undefined): CType {
   }
 }
 
+/**
+ * Resolves a declarator (the part of a declaration after the base type)
+ * into a variable name and its full type, unwrapping any number of
+ * `pointer_declarator` layers recursively — `int **pptr` is two layers,
+ * each adding one level of pointer-to. Returns null for declarator
+ * shapes Codevi doesn't support (arrays, function pointers). Verified
+ * against the real grammar (plain int, single-star, and double-star
+ * declarators, with and without initializers) before writing this, the
+ * same way earlier phases verified field names — see
+ * docs/PHASE_5_POINTERS.md → "Declarator resolution".
+ */
+function resolveDeclarator(node: SyntaxNode, baseType: CType): { name: string; type: CType | CPointerType } | null {
+  if (node.type === "identifier") {
+    return { name: node.text, type: baseType };
+  }
+  if (node.type === "pointer_declarator") {
+    const inner = node.childForFieldName("declarator");
+    if (!inner) return null;
+    const resolved = resolveDeclarator(inner, baseType);
+    if (!resolved) return null;
+    return { name: resolved.name, type: { kind: "pointer", pointee: resolved.type } };
+  }
+  return null;
+}
+
+function defaultForResolvedType(type: CType | CPointerType): CValue {
+  return typeof type === "string" ? defaultValueForType(type) : defaultPointerValue(type.pointee);
+}
+
 function formatValue(value: CValue): string {
+  if (value.kind === "pointer") {
+    return value.target ? formatAddress(value.target) : "NULL";
+  }
   if (value.type === "char") return `'${String.fromCharCode(value.value)}'`;
   return String(value.value);
 }
@@ -101,28 +135,18 @@ function collectFunctions(rootNode: SyntaxNode): Map<string, SyntaxNode> {
   return functions;
 }
 
-/** Splits a merged scope snapshot into parameters vs. other locals for
- * one frame, and reads its current line — see RuntimeFrame's doc
- * comment in types.ts for how currentNode/currentScope stay accurate
- * for every frame, not just the topmost one. */
 function buildFrameSnapshot(frame: RuntimeFrame, callDepth: number): StackFrameSnapshot {
   const merged = frame.currentScope.snapshot();
+  const addresses = frame.currentScope.snapshotAddresses();
   const parameters: Record<string, CValue> = {};
   const locals: Record<string, CValue> = {};
   for (const [name, value] of Object.entries(merged)) {
     if (frame.parameterNames.includes(name)) parameters[name] = value;
     else locals[name] = value;
   }
-  return { functionName: frame.functionName, callDepth, line: frame.currentNode.startPosition.row, parameters, locals };
+  return { functionName: frame.functionName, callDepth, line: frame.currentNode.startPosition.row, parameters, locals, addresses };
 }
 
-/** Records that the topmost frame is currently paused at `node`/`scope`,
- * then builds the full InterpreterStep — including a snapshot of every
- * active frame, not just this one. This one function is the entire
- * mechanism behind Phase 4's scope-correct, multi-frame call stack.
- * `extra` carries the output text or input request for those two step
- * kinds (Phase 4.1) — everything else about building the step is
- * identical regardless of kind. */
 function makeStep(
   node: SyntaxNode,
   kind: InterpreterStep["kind"],
@@ -146,25 +170,15 @@ function makeStep(
     description,
     variables: topSnapshot ? { ...topSnapshot.parameters, ...topSnapshot.locals } : {},
     callStack: stack,
+    memory: scope.memory,
     ...extra,
   };
 }
 
-/** Yields an "output" step and returns immediately — ExecutionEngine
- * appends the text to its output buffer and keeps going without
- * pausing, the same way it treats a normal statement step during a Run.
- * See docs/PHASE_4_1_STDIO.md → "Output vs input events". */
 function* emitOutput(node: SyntaxNode, callStack: RuntimeFrame[], scope: Scope, text: string): Step<void> {
   yield makeStep(node, "output", callStack, scope, `Output: ${truncate(text, 40)}`, { output: text });
 }
 
-/**
- * Yields an "input-request" step and suspends until the caller resumes
- * with a real value (or cancellation, e.g. from Reset — see
- * ExecutionEngine.reset). This is the one place in the whole
- * interpreter where a yield's result actually matters; every other
- * yield site just calls `yield makeStep(...)` as a bare statement.
- */
 function* requestInput(
   node: SyntaxNode,
   callStack: RuntimeFrame[],
@@ -181,10 +195,15 @@ function* requestInput(
 
 function extractScanfTargetName(node: SyntaxNode): string | null {
   if (node.type !== "pointer_expression") return null;
+  if (node.childForFieldName("operator")?.text !== "&") return null;
   const argument = node.childForFieldName("argument");
   if (!argument || argument.type !== "identifier") return null;
   return argument.text;
 }
+
+// ---------------------------------------------------------------------
+// Standard I/O (Phase 4.1, unchanged)
+// ---------------------------------------------------------------------
 
 function* callPrintf(
   node: SyntaxNode,
@@ -205,7 +224,11 @@ function* callPrintf(
     if (argNode.type === "string_literal") {
       printfArgs.push({ kind: "string", text: extractStringLiteralText(argNode) });
     } else {
-      printfArgs.push({ kind: "value", value: yield* evaluate(argNode, scope, functions, callStack) });
+      const value = yield* evaluate(argNode, scope, functions, callStack);
+      if (isPointer(value)) {
+        throw new InterpreterError("printf()'s numeric specifiers (%d/%f/%c/...) don't support pointer arguments yet", argNode);
+      }
+      printfArgs.push({ kind: "value", value });
     }
   }
 
@@ -216,7 +239,7 @@ function* callPrintf(
     throw new InterpreterError(error instanceof Error ? error.message : String(error), node);
   }
   yield* emitOutput(node, callStack, scope, text);
-  return { type: "int", value: text.length }; // real printf() returns the character count written
+  return scalar("int", text.length);
 }
 
 function* callPuts(node: SyntaxNode, argNodes: SyntaxNode[], scope: Scope, callStack: RuntimeFrame[]): Step<CValue> {
@@ -227,7 +250,7 @@ function* callPuts(node: SyntaxNode, argNodes: SyntaxNode[], scope: Scope, callS
       ? extractStringLiteralText(argNode)
       : unsupported(argNode, "puts() only supports a string literal written directly in the call — Codevi has no string variable type yet");
   yield* emitOutput(node, callStack, scope, `${text}\n`);
-  return { type: "int", value: 0 };
+  return scalar("int", 0);
 }
 
 function* callPutchar(
@@ -239,8 +262,9 @@ function* callPutchar(
 ): Step<CValue> {
   if (argNodes.length !== 1) throw new InterpreterError("putchar() takes exactly one argument", node);
   const value = yield* evaluate(argNodes[0], scope, functions, callStack);
+  if (isPointer(value)) throw new InterpreterError("putchar() expects a character, not a pointer", argNodes[0]);
   yield* emitOutput(node, callStack, scope, String.fromCharCode(value.value));
-  return { type: "int", value: value.value };
+  return scalar("int", value.value);
 }
 
 function* callScanf(node: SyntaxNode, argNodes: SyntaxNode[], scope: Scope, callStack: RuntimeFrame[]): Step<CValue> {
@@ -278,32 +302,205 @@ function* callScanf(node: SyntaxNode, argNodes: SyntaxNode[], scope: Scope, call
     scope.assign(variableName, value);
     matched++;
   }
-  return { type: "int", value: matched };
+  return scalar("int", matched);
 }
 
 function* callGetchar(node: SyntaxNode, scope: Scope, callStack: RuntimeFrame[]): Step<CValue> {
   const value = yield* requestInput(node, callStack, scope, "c", "getchar()");
-  // Real getchar() returns int (the character code, or EOF) even though
-  // it reads one character — matching that here rather than returning
-  // "char", since `int ch = getchar();` is the idiomatic C signature.
-  return { type: "int", value: value.value };
+  return scalar("int", value.kind === "scalar" ? value.value : 0);
 }
 
+// ---------------------------------------------------------------------
+// Dynamic memory (Phase 5)
+// ---------------------------------------------------------------------
+
 /**
- * Entry point: finds `main` among the top-level function definitions and
- * runs it. The whole interpreter is one mutually-recursive family of
- * generator functions (this file) so that a `yield*` chain from `main`
- * down through nested calls and nested expressions naturally mirrors the
- * interpreted program's own call stack — see docs/PHASE_3_EXECUTION.md →
- * "Why generators".
+ * Recognizes the `N * sizeof(TYPE)` idiom structurally in the AST,
+ * rather than trying to reverse-engineer element size from a raw
+ * number after evaluation — see docs/PHASE_5_POINTERS.md → "How malloc
+ * infers element size" for why. Falls back to "one opaque block" when
+ * the argument doesn't match a recognized shape, which is always safe
+ * (dereferencing still works) even though pointer arithmetic across it
+ * won't be meaningful.
  */
+function inferAllocationShape(sizeNode: SyntaxNode, totalUnits: number): { slotCount: number; elementType: CType } {
+  if (sizeNode.type === "sizeof_expression") {
+    return { slotCount: 1, elementType: sizeofElementType(sizeNode) };
+  }
+  if (sizeNode.type === "binary_expression" && sizeNode.childForFieldName("operator")?.text === "*") {
+    const left = sizeNode.childForFieldName("left")!;
+    const right = sizeNode.childForFieldName("right")!;
+    const sizeofSide = left.type === "sizeof_expression" ? left : right.type === "sizeof_expression" ? right : null;
+    if (sizeofSide) {
+      const elementType = sizeofElementType(sizeofSide);
+      const elementSize = sizeOfType(elementType);
+      const slotCount = Math.max(1, Math.round(totalUnits / elementSize));
+      return { slotCount, elementType };
+    }
+  }
+  return { slotCount: 1, elementType: "int" };
+}
+
+function sizeofElementType(sizeofNode: SyntaxNode): CType {
+  const typeDescriptor = sizeofNode.childForFieldName("type");
+  const typeName = typeDescriptor?.childForFieldName("type")?.text;
+  return mapPrimitiveType(typeName);
+}
+
+function* evaluateSizeof(node: SyntaxNode, scope: Scope, functions: Map<string, SyntaxNode>, callStack: RuntimeFrame[]): Step<CValue> {
+  const typeDescriptor = node.childForFieldName("type");
+  if (typeDescriptor) {
+    return scalar("int", sizeOfType(sizeofElementType(node)));
+  }
+  const valueNode = node.childForFieldName("value");
+  if (!valueNode) throw new InterpreterError("sizeof requires a type or expression", node);
+  const inner = valueNode.type === "parenthesized_expression" ? (namedChildren(valueNode)[0] ?? valueNode) : valueNode;
+  const evaluated = yield* evaluate(inner, scope, functions, callStack);
+  if (evaluated.kind === "pointer") return scalar("int", sizeOfType("int")); // pointer size, simulated
+  return scalar("int", sizeOfType(evaluated.type));
+}
+
+function* callMalloc(node: SyntaxNode, argNodes: SyntaxNode[], scope: Scope, functions: Map<string, SyntaxNode>, callStack: RuntimeFrame[]): Step<CValue> {
+  if (argNodes.length !== 1) throw new InterpreterError("malloc() takes exactly one argument (a size in bytes)", node);
+  const sizeValue = yield* evaluate(argNodes[0], scope, functions, callStack);
+  if (isPointer(sizeValue)) throw new InterpreterError("malloc()'s argument must be a number of bytes", argNodes[0]);
+  if (sizeValue.value <= 0) {
+    throw new InterpreterError(`malloc() requires a positive size (got ${sizeValue.value})`, argNodes[0]);
+  }
+  const { slotCount, elementType } = inferAllocationShape(argNodes[0], sizeValue.value);
+  let address: Address;
+  try {
+    address = scope.memory.allocateHeap(slotCount, sizeOfType(elementType), "malloc", defaultValueForType(elementType));
+  } catch (error) {
+    throw new InterpreterError(error instanceof Error ? error.message : String(error), node);
+  }
+  return pointerValue(elementType, address);
+}
+
+function* callCalloc(node: SyntaxNode, argNodes: SyntaxNode[], scope: Scope, functions: Map<string, SyntaxNode>, callStack: RuntimeFrame[]): Step<CValue> {
+  if (argNodes.length !== 2) throw new InterpreterError("calloc() takes exactly two arguments (count, element size)", node);
+  const countValue = yield* evaluate(argNodes[0], scope, functions, callStack);
+  const sizeArgNode = argNodes[1];
+  if (isPointer(countValue)) throw new InterpreterError("calloc()'s first argument must be a count", argNodes[0]);
+  if (countValue.value <= 0) {
+    throw new InterpreterError(`calloc() requires a positive element count (got ${countValue.value})`, argNodes[0]);
+  }
+  const elementType = sizeArgNode.type === "sizeof_expression" ? sizeofElementType(sizeArgNode) : "int";
+  let address: Address;
+  try {
+    // calloc zero-initializes — defaultValueForType already produces 0.
+    address = scope.memory.allocateHeap(countValue.value, sizeOfType(elementType), "calloc", defaultValueForType(elementType));
+  } catch (error) {
+    throw new InterpreterError(error instanceof Error ? error.message : String(error), node);
+  }
+  return pointerValue(elementType, address);
+}
+
+function* callRealloc(node: SyntaxNode, argNodes: SyntaxNode[], scope: Scope, functions: Map<string, SyntaxNode>, callStack: RuntimeFrame[]): Step<CValue> {
+  if (argNodes.length !== 2) throw new InterpreterError("realloc() takes exactly two arguments (pointer, new size)", node);
+  const pointerArg = yield* evaluate(argNodes[0], scope, functions, callStack);
+  const sizeValue = yield* evaluate(argNodes[1], scope, functions, callStack);
+  if (!isPointer(pointerArg)) throw new InterpreterError("realloc()'s first argument must be a pointer", argNodes[0]);
+  if (isPointer(sizeValue)) throw new InterpreterError("realloc()'s second argument must be a number of bytes", argNodes[1]);
+
+  const { slotCount, elementType } = inferAllocationShape(argNodes[1], sizeValue.value);
+  const oldTarget = pointerArg.target;
+  const oldValues = oldTarget ? scope.memory.slotValues(oldTarget) : [];
+
+  let newAddress: Address;
+  try {
+    if (oldTarget) scope.memory.free(oldTarget);
+    newAddress = scope.memory.allocateHeap(slotCount, sizeOfType(elementType), "realloc", defaultValueForType(elementType));
+  } catch (error) {
+    throw new InterpreterError(error instanceof Error ? error.message : String(error), node);
+  }
+  // Preserve overlapping contents, matching real realloc's copy-on-grow/shrink behavior.
+  for (let i = 0; i < Math.min(oldValues.length, slotCount); i++) {
+    scope.memory.write({ ...newAddress, slot: i }, oldValues[i]);
+  }
+  return pointerValue(elementType, newAddress);
+}
+
+function* callFree(node: SyntaxNode, argNodes: SyntaxNode[], scope: Scope, functions: Map<string, SyntaxNode>, callStack: RuntimeFrame[]): Step<CValue> {
+  if (argNodes.length !== 1) throw new InterpreterError("free() takes exactly one argument", node);
+  const value = yield* evaluate(argNodes[0], scope, functions, callStack);
+  if (!isPointer(value)) throw new InterpreterError("free()'s argument must be a pointer", argNodes[0]);
+  if (value.target === null) {
+    // free(NULL) is explicitly a documented no-op in real C.
+    return scalar("int", 0);
+  }
+  try {
+    scope.memory.free(value.target);
+  } catch (error) {
+    throw new InterpreterError(error instanceof Error ? error.message : String(error), node);
+  }
+  return scalar("int", 0);
+}
+
+/** Reads through a pointer, with the three checks that make dereference
+ * safe-to-fail-loudly rather than a silent wrong answer or a crash: not
+ * NULL, points at a real (never-invalidated) location, and — for heap
+ * targets — not freed. */
+function dereference(pointer: CPointerValue, scope: Scope, node: SyntaxNode): CValue {
+  if (pointer.target === null) {
+    throw new InterpreterError("Null pointer dereference", node);
+  }
+  if (pointer.target.space === "heap" && !scope.memory.isActiveHeapBlock(pointer.target)) {
+    throw new InterpreterError(`Use after free: ${formatAddress(pointer.target)} was already freed`, node);
+  }
+  scope.memory.recordDereference(pointer.target);
+  return scope.memory.read(pointer.target);
+}
+
+/** Pointer arithmetic (`ptr + n`, `ptr++`) is only meaningful across a
+ * multi-element heap allocation — Codevi has no arrays, so a pointer to
+ * a single stack variable has nowhere else to "move" to. Bounds-checked
+ * against the allocation's real slot count, turning a buffer overrun
+ * into a clear error instead of reading/writing unrelated memory. */
+function pointerArithmetic(pointer: CPointerValue, offset: number, scope: Scope, node: SyntaxNode): CPointerValue {
+  if (pointer.target === null) {
+    throw new InterpreterError("Pointer arithmetic on a NULL pointer", node);
+  }
+  if (pointer.target.space !== "heap") {
+    unsupported(
+      node,
+      "pointer arithmetic is only supported on a pointer into a malloc()/calloc()'d block — Codevi doesn't support arrays, so a pointer to a single variable has nowhere else to move to",
+    );
+  }
+  const allocation = scope.memory.getAllocation(pointer.target);
+  const newSlot = pointer.target.slot + offset;
+  if (!allocation || newSlot < 0 || newSlot >= allocation.slotCount) {
+    throw new InterpreterError(
+      `Pointer arithmetic moved outside the bounds of the allocated block (${allocation?.slotCount ?? 0} element(s))`,
+      node,
+    );
+  }
+  return { ...pointer, target: { ...pointer.target, slot: newSlot } };
+}
+
+// ---------------------------------------------------------------------
+// Core interpreter
+// ---------------------------------------------------------------------
+
 export function* interpretProgram(rootNode: SyntaxNode): Step<CValue | undefined> {
   const functions = collectFunctions(rootNode);
   const mainFn = functions.get("main");
   if (!mainFn) {
     throw new InterpreterError('No "main" function found', rootNode);
   }
-  return yield* callFunction(mainFn, [], functions, []);
+  const memory = new MemoryModel();
+  const result = yield* callFunction(mainFn, [], functions, [], memory);
+  // Optional leak report (Phase 5 brief: "Memory leaks... at program
+  // end, optional if feasible") — surfaced as part of the final step's
+  // description rather than a thrown error, since a leak isn't a crash.
+  const leaks = memory.allAllocations().filter((allocation) => allocation.active);
+  if (leaks.length > 0) {
+    const summary = leaks.map((leak) => formatAddress(leak.address)).join(", ");
+    yield makeStep(rootNode, "output", [], new Scope(null, memory), "", {
+      output: `\n[${leaks.length} heap block(s) never freed: ${summary}]\n`,
+    });
+  }
+  return result;
 }
 
 function* callFunction(
@@ -311,6 +508,7 @@ function* callFunction(
   args: CValue[],
   functions: Map<string, SyntaxNode>,
   callStack: RuntimeFrame[],
+  memory: MemoryModel,
 ): Step<CValue | undefined> {
   if (callStack.length >= MAX_CALL_DEPTH) {
     throw new InterpreterError(`Maximum call depth (${MAX_CALL_DEPTH}) exceeded — likely unbounded recursion`, fnNode);
@@ -321,19 +519,21 @@ function* callFunction(
   const paramListNode = declarator?.childForFieldName("parameters");
   const returnType = mapPrimitiveType(fnNode.childForFieldName("type")?.text);
 
-  const scope = new Scope(null); // no closures in C — each call starts fresh
+  const scope = new Scope(null, memory);
   const paramNodes = paramListNode ? namedChildren(paramListNode).filter((n) => n.type === "parameter_declaration") : [];
-  const parameterNames = paramNodes.map((p) => p.childForFieldName("declarator")?.text).filter((n): n is string => !!n);
+  const resolvedParams = paramNodes.map((paramNode) => {
+    const baseType = mapPrimitiveType(paramNode.childForFieldName("type")?.text);
+    const declaratorNode = paramNode.childForFieldName("declarator");
+    return declaratorNode ? resolveDeclarator(declaratorNode, baseType) : null;
+  });
+  const parameterNames = resolvedParams.map((p) => p?.name).filter((n): n is string => !!n);
 
   const frame: RuntimeFrame = { functionName: name, scope, parameterNames, currentNode: fnNode, currentScope: scope };
   callStack.push(frame);
 
-  paramNodes.forEach((paramNode, index) => {
-    const paramName = paramNode.childForFieldName("declarator")?.text;
-    const paramType = mapPrimitiveType(paramNode.childForFieldName("type")?.text);
-    if (paramName) {
-      scope.declare(paramName, args[index] ?? defaultValueForType(paramType));
-    }
+  resolvedParams.forEach((resolved, index) => {
+    if (!resolved) return;
+    scope.declare(resolved.name, args[index] ?? defaultForResolvedType(resolved.type));
   });
 
   yield makeStep(fnNode, "call-enter", callStack, scope, `Entering function "${name}"`);
@@ -343,11 +543,9 @@ function* callFunction(
   const returnValue = result.kind === "return" ? result.value : undefined;
 
   // frame.currentScope, not the bare `scope` — the function body is
-  // itself a block, so executeBlock gave it its own child scope (see
-  // executeBlock below); using `scope` here would show only parameters
-  // and silently drop every body-level local, including ones declared
-  // directly in the function body rather than in some nested block.
-  // Found via a real Phase 4.1 test failure — see
+  // itself a block, so executeBlock gave it its own child scope; using
+  // `scope` here would show only parameters and silently drop every
+  // body-level local. Found and fixed in Phase 4.1 — see
   // docs/PHASE_4_1_STDIO.md → "A real bug this phase's tests caught".
   yield makeStep(
     fnNode,
@@ -522,23 +720,27 @@ function* executeDeclaration(
   functions: Map<string, SyntaxNode>,
   callStack: RuntimeFrame[],
 ): Step<void> {
-  const type = mapPrimitiveType(node.childForFieldName("type")?.text);
+  const baseType = mapPrimitiveType(node.childForFieldName("type")?.text);
   const declarator = node.childForFieldName("declarator");
   if (!declarator) unsupported(node, "declaration has no declarator");
 
   if (declarator.type === "init_declarator") {
-    const nameNode = declarator.childForFieldName("declarator");
+    const innerDeclarator = declarator.childForFieldName("declarator");
     const valueNode = declarator.childForFieldName("value");
-    if (!nameNode) unsupported(declarator, "missing variable name");
-    if (nameNode.type !== "identifier") {
-      unsupported(nameNode, "only simple variable declarations are supported (no arrays/pointers)");
+    if (!innerDeclarator) unsupported(declarator, "missing variable name");
+    const resolved = resolveDeclarator(innerDeclarator, baseType);
+    if (!resolved) {
+      unsupported(innerDeclarator, "only simple variables and pointers are supported (no arrays/function pointers)");
     }
-    const value = valueNode ? yield* evaluate(valueNode, scope, functions, callStack) : defaultValueForType(type);
-    scope.declare(nameNode.text, value);
-  } else if (declarator.type === "identifier") {
-    scope.declare(declarator.text, defaultValueForType(type));
+    const value = valueNode ? yield* evaluate(valueNode, scope, functions, callStack) : defaultForResolvedType(resolved.type);
+    scope.declare(resolved.name, value);
+    if (value.kind === "pointer") scope.memory.recordPointerAssign(resolved.name, value.target);
   } else {
-    unsupported(declarator, "only simple variable declarations are supported (no arrays/pointers)");
+    const resolved = resolveDeclarator(declarator, baseType);
+    if (!resolved) {
+      unsupported(declarator, "only simple variables and pointers are supported (no arrays/function pointers)");
+    }
+    scope.declare(resolved.name, defaultForResolvedType(resolved.type));
   }
 }
 
@@ -546,7 +748,7 @@ function* evaluate(node: SyntaxNode, scope: Scope, functions: Map<string, Syntax
   switch (node.type) {
     case "parenthesized_expression": {
       const inner = namedChildren(node)[0];
-      return inner ? yield* evaluate(inner, scope, functions, callStack) : { type: "int", value: 0 };
+      return inner ? yield* evaluate(inner, scope, functions, callStack) : scalar("int", 0);
     }
 
     case "number_literal":
@@ -555,7 +757,18 @@ function* evaluate(node: SyntaxNode, scope: Scope, functions: Map<string, Syntax
     case "char_literal":
       return parseCharLiteral(node.text);
 
+    case "sizeof_expression":
+      return yield* evaluateSizeof(node, scope, functions, callStack);
+
+    case "null":
+      // Tree-sitter-c's grammar recognizes the NULL macro name as a
+      // dedicated `null` node (it's special-cased in the grammar
+      // despite being a macro in real C, not a keyword) — verified
+      // directly rather than assumed. See docs/PHASE_5_POINTERS.md.
+      return pointerValue("int", null);
+
     case "identifier": {
+      if (node.text === "NULL") return pointerValue("int", null);
       const value = scope.lookup(node.text);
       if (value === undefined) {
         throw new InterpreterError(`Use of undeclared variable "${node.text}"`, node);
@@ -568,21 +781,62 @@ function* evaluate(node: SyntaxNode, scope: Scope, functions: Map<string, Syntax
       const leftNode = node.childForFieldName("left")!;
       const rightNode = node.childForFieldName("right")!;
       const left = yield* evaluate(leftNode, scope, functions, callStack);
+
       if (operator === "&&" && !isTruthy(left)) return cBool(false);
       if (operator === "||" && isTruthy(left)) return cBool(true);
       const right = yield* evaluate(rightNode, scope, functions, callStack);
-      return applyBinaryOp(operator, left, right);
+
+      if (isPointer(left) || isPointer(right)) {
+        if (isPointer(left) && isPointer(right)) {
+          return comparePointers(operator, left, right);
+        }
+        // pointer +/- integer (either order) is pointer arithmetic.
+        const pointer = isPointer(left) ? left : (right as CPointerValue);
+        const offsetValue = isPointer(left) ? right : left;
+        if (isPointer(offsetValue)) unsupported(node, "arithmetic between two pointers (other than == / !=) isn't supported");
+        if (operator === "+") return pointerArithmetic(pointer, offsetValue.value, scope, node);
+        if (operator === "-" && isPointer(left)) return pointerArithmetic(pointer, -offsetValue.value, scope, node);
+        unsupported(node, `"${operator}" is not supported between a pointer and a number`);
+      }
+
+      return applyBinaryOp(operator, left as CScalarValue, right as CScalarValue);
     }
 
     case "unary_expression": {
       const operator = node.childForFieldName("operator")?.text ?? "";
       const argumentNode = node.childForFieldName("argument")!;
       const argument = yield* evaluate(argumentNode, scope, functions, callStack);
+      if (isPointer(argument)) {
+        if (operator === "!") return cBool(!isTruthy(argument));
+        unsupported(node, `"${operator}" is not supported on a pointer`);
+      }
       return applyUnaryOp(operator, argument);
     }
 
-    case "pointer_expression":
-      unsupported(node, "the address-of operator (&) is only supported as a scanf() argument — Codevi has no pointer value type yet");
+    case "pointer_expression": {
+      const operator = node.childForFieldName("operator")?.text;
+      const argumentNode = node.childForFieldName("argument")!;
+
+      if (operator === "&") {
+        if (argumentNode.type !== "identifier") {
+          unsupported(node, "the address-of operator (&) is only supported on a simple, already-declared variable");
+        }
+        const address = scope.lookupAddress(argumentNode.text);
+        if (!address) throw new InterpreterError(`Use of undeclared variable "${argumentNode.text}"`, argumentNode);
+        const existing = scope.lookup(argumentNode.text)!;
+        const pointeeType: CType | CPointerType = existing.kind === "pointer" ? existing.pointerType : existing.type;
+        return pointerValue(pointeeType, address);
+      }
+
+      if (operator === "*") {
+        const pointer = yield* evaluate(argumentNode, scope, functions, callStack);
+        if (!isPointer(pointer)) throw new InterpreterError("Cannot dereference a non-pointer value", node);
+        return dereference(pointer, scope, node);
+      }
+
+      unsupported(node, `pointer operator "${operator ?? "?"}" is not supported`);
+      break;
+    }
 
     case "update_expression": {
       const operator = node.childForFieldName("operator")?.text ?? "++";
@@ -592,9 +846,15 @@ function* evaluate(node: SyntaxNode, scope: Scope, functions: Map<string, Syntax
         unsupported(node, "++/-- is only supported on simple variables");
       }
       const current = yield* evaluate(argumentNode, scope, functions, callStack);
-      const delta = operator === "++" ? 1 : -1;
-      const updated: CValue = { type: current.type, value: current.value + delta };
+      let updated: CValue;
+      if (isPointer(current)) {
+        updated = pointerArithmetic(current, operator === "++" ? 1 : -1, scope, node);
+      } else {
+        const delta = operator === "++" ? 1 : -1;
+        updated = scalar(current.type, current.value + delta);
+      }
       scope.assign(argumentNode.text, updated);
+      if (updated.kind === "pointer") scope.memory.recordPointerAssign(argumentNode.text, updated.target);
       return isPrefix ? updated : current;
     }
 
@@ -602,12 +862,33 @@ function* evaluate(node: SyntaxNode, scope: Scope, functions: Map<string, Syntax
       const operator = node.childForFieldName("operator")?.text ?? "=";
       const leftNode = node.childForFieldName("left")!;
       const rightNode = node.childForFieldName("right")!;
+
+      // *ptr = value  (or *ptr += value, etc.) — write through a pointer.
+      if (leftNode.type === "pointer_expression" && leftNode.childForFieldName("operator")?.text === "*") {
+        const pointerArgNode = leftNode.childForFieldName("argument")!;
+        const pointer = yield* evaluate(pointerArgNode, scope, functions, callStack);
+        if (!isPointer(pointer)) throw new InterpreterError("Cannot dereference a non-pointer value", leftNode);
+        if (pointer.target === null) throw new InterpreterError("Null pointer dereference", leftNode);
+        if (pointer.target.space === "heap" && !scope.memory.isActiveHeapBlock(pointer.target)) {
+          throw new InterpreterError(`Use after free: ${formatAddress(pointer.target)} was already freed`, leftNode);
+        }
+        const right = yield* evaluate(rightNode, scope, functions, callStack);
+        const newValue =
+          operator === "="
+            ? right
+            : applyBinaryOp(operator.slice(0, -1), scope.memory.read(pointer.target) as CScalarValue, right as CScalarValue);
+        scope.memory.write(pointer.target, newValue);
+        return newValue;
+      }
+
       if (leftNode.type !== "identifier") {
-        unsupported(leftNode, "only assignment to simple variables is supported (no arrays/pointers)");
+        unsupported(leftNode, "only assignment to simple variables or *pointer is supported (no arrays)");
       }
       const right = yield* evaluate(rightNode, scope, functions, callStack);
-      const newValue = operator === "=" ? right : applyBinaryOp(operator.slice(0, -1), scope.lookup(leftNode.text)!, right);
+      const newValue =
+        operator === "=" ? right : applyBinaryOp(operator.slice(0, -1), scope.lookup(leftNode.text) as CScalarValue, right as CScalarValue);
       scope.assign(leftNode.text, newValue);
+      if (newValue.kind === "pointer") scope.memory.recordPointerAssign(leftNode.text, newValue.target);
       return newValue;
     }
 
@@ -617,19 +898,20 @@ function* evaluate(node: SyntaxNode, scope: Scope, functions: Map<string, Syntax
       const argsNode = node.childForFieldName("arguments");
       const argNodes = argsNode ? namedChildren(argsNode) : [];
 
-      // Standard I/O (Phase 4.1) — handled here, ahead of the
-      // user-defined-function lookup, since these aren't in the
-      // `functions` map and shouldn't be. See docs/PHASE_4_1_STDIO.md.
       if (name === "printf") return yield* callPrintf(node, argNodes, scope, functions, callStack);
       if (name === "puts") return yield* callPuts(node, argNodes, scope, callStack);
       if (name === "putchar") return yield* callPutchar(node, argNodes, scope, functions, callStack);
       if (name === "scanf") return yield* callScanf(node, argNodes, scope, callStack);
       if (name === "getchar") return yield* callGetchar(node, scope, callStack);
+      if (name === "malloc") return yield* callMalloc(node, argNodes, scope, functions, callStack);
+      if (name === "calloc") return yield* callCalloc(node, argNodes, scope, functions, callStack);
+      if (name === "realloc") return yield* callRealloc(node, argNodes, scope, functions, callStack);
+      if (name === "free") return yield* callFree(node, argNodes, scope, functions, callStack);
 
       const fn = functions.get(name);
       if (!fn) {
         if (isKnownLibraryFunction(name)) {
-          unsupported(node, `calls to library functions like "${name}" aren't supported yet — Codevi covers user-defined functions, core control flow, and basic stdio only`);
+          unsupported(node, `calls to library functions like "${name}" aren't supported yet — Codevi covers user-defined functions, core control flow, basic stdio, and malloc/calloc/realloc/free only`);
         }
         unsupported(node, `no function named "${name}" is defined`);
       }
@@ -637,12 +919,12 @@ function* evaluate(node: SyntaxNode, scope: Scope, functions: Map<string, Syntax
       for (const argNode of argNodes) {
         args.push(yield* evaluate(argNode, scope, functions, callStack));
       }
-      const result = yield* callFunction(fn, args, functions, callStack);
-      return result ?? { type: "int", value: 0 };
+      const result = yield* callFunction(fn, args, functions, callStack, scope.memory);
+      return result ?? scalar("int", 0);
     }
 
     case "string_literal":
-      unsupported(node, "strings aren't supported as general values yet — Codevi doesn't model pointers/arrays (string literals do work as direct arguments to printf/puts)");
+      unsupported(node, "strings aren't supported as general values yet — Codevi doesn't model character arrays (string literals do work as direct arguments to printf/puts)");
 
     default:
       unsupported(node);

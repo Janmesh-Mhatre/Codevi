@@ -1,5 +1,6 @@
 import type { Node as SyntaxNode } from "web-tree-sitter";
 import type { Scope } from "./scope";
+import type { Address, MemoryModel } from "./memory";
 import type { CValue } from "./values";
 import type { ScanfSpecifier } from "./stdio";
 
@@ -37,6 +38,11 @@ export interface StackFrameSnapshot {
   line: number;
   parameters: Record<string, CValue>;
   locals: Record<string, CValue>;
+  /** Each variable's own storage address (new in Phase 5) — a parallel
+   * map by name, not folded into parameters/locals, since those already
+   * had an established Record<string, CValue> shape other code depends
+   * on exactly as-is. */
+  addresses: Record<string, Address>;
 }
 
 /** What kind of value an interactive input request expects — reuses
@@ -91,19 +97,41 @@ export interface InterpreterStep {
    * auto-continue) until provideInput()/cancelInput() resumes the
    * generator. */
   inputRequest?: InputRequest;
+  /** The run's MemoryModel — set on every step (see makeStep in
+   * interpreter.ts, which just forwards scope.memory). Lets
+   * ExecutionEngine's conversion read heap allocations for the public
+   * ExecutionStep.heap array without threading a second parameter
+   * through the whole call chain. Never forwarded past that one
+   * conversion — the public ExecutionStep only ever holds plain heap
+   * data, not this class instance. */
+  memory: MemoryModel;
 }
 
 /** Thrown for anything the interpreter genuinely cannot make sense of —
  * unsupported syntax, undefined variables/functions, runtime errors like
  * division by zero. Always carries a source position so the UI can point
  * at exactly where things went wrong. */
+/** Deliberately plain — see docs/PHASE_5_POINTERS.md -> "A
+ * test-infrastructure crash, not an application bug" for why this used
+ * to hold a live SyntaxNode and no longer does. Nothing downstream ever
+ * read the raw node (only a position would ever be useful, e.g. for a
+ * future "jump to error" feature), so there was no reason to keep a
+ * live WASM reference alive on every thrown error — extracting the
+ * position at throw time matches how every other WASM-backed value
+ * leaving the interpreter layer is handled (AstNode, ExecutionStep,
+ * StackFrame all do the same conversion). */
+export interface SourcePosition {
+  row: number;
+  column: number;
+}
+
 export class InterpreterError extends Error {
-  constructor(
-    message: string,
-    public readonly node: SyntaxNode | null,
-  ) {
+  public readonly position: SourcePosition | null;
+
+  constructor(message: string, node: SyntaxNode | null) {
     super(message);
     this.name = "InterpreterError";
+    this.position = node ? { row: node.startPosition.row, column: node.startPosition.column } : null;
   }
 }
 

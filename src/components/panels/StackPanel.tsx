@@ -1,8 +1,9 @@
 import { Layers } from "lucide-react";
 import { useExecutionStore } from "../../state/executionStore";
 import { formatExecutionValue } from "../../execution/utils/formatValue";
+import type { ExecutionValue } from "../../execution/models/executionTypes";
 
-function formatParameters(parameters: Record<string, { type: string; value: number }>): string {
+function formatParameters(parameters: Record<string, ExecutionValue>): string {
   const entries = Object.entries(parameters);
   if (entries.length === 0) return "()";
   return `(${entries.map(([name, value]) => `${name}=${formatExecutionValue(value)}`).join(", ")})`;
@@ -59,7 +60,10 @@ export function StackPanel() {
               {Object.entries(frame.locals).map(([name, value]) => (
                 <div key={name} className="flex justify-between gap-3 font-mono text-xs text-fg-muted">
                   <span>{name}</span>
-                  <span>{formatExecutionValue(value)}</span>
+                  <span>
+                    {value.kind === "pointer" && "→ "}
+                    {formatExecutionValue(value)}
+                  </span>
                 </div>
               ))}
             </div>

@@ -1,5 +1,5 @@
 import type { Node as SyntaxNode } from "web-tree-sitter";
-import type { CType, CValue } from "./values";
+import { scalar, type CScalarValue, type CType } from "./values";
 
 /**
  * Everything format-string/format-specifier related for printf/scanf/
@@ -79,9 +79,9 @@ export function parseFormatString(text: string): FormatToken[] {
   return tokens;
 }
 
-export type PrintfArgument = { kind: "value"; value: CValue } | { kind: "string"; text: string };
+export type PrintfArgument = { kind: "value"; value: CScalarValue } | { kind: "string"; text: string };
 
-function formatPrintfValue(value: CValue, specifier: PrintfSpecifier): string {
+function formatPrintfValue(value: CScalarValue, specifier: PrintfSpecifier): string {
   switch (specifier) {
     case "d":
     case "i":
@@ -163,29 +163,29 @@ function scanfTypeFor(specifier: ScanfSpecifier): CType {
  * — the caller (ExecutionEngine) is responsible for re-prompting rather
  * than ever passing an invalid value into the interpreter, so the
  * interpreter's own code never has to handle malformed scanf input. */
-export function parseScanfValue(raw: string, specifier: ScanfSpecifier): CValue | null {
+export function parseScanfValue(raw: string, specifier: ScanfSpecifier): CScalarValue | null {
   if (specifier === "c") {
     if (raw.length === 0) return null;
-    return { type: "char", value: raw.charCodeAt(0) };
+    return scalar("char", raw.charCodeAt(0));
   }
   const trimmed = raw.trim();
   if (trimmed === "") return null;
   if (specifier === "f") {
     if (!/^[+-]?(\d+\.?\d*|\.\d+)$/.test(trimmed)) return null;
-    return { type: "float", value: parseFloat(trimmed) };
+    return scalar("float", parseFloat(trimmed));
   }
   // d / i / u
   if (!/^[+-]?\d+$/.test(trimmed)) return null;
-  return { type: "int", value: parseInt(trimmed, 10) };
+  return scalar("int", parseInt(trimmed, 10));
 }
 
 /** Same validation getchar() needs — a single character, nothing more
  * to parse. Kept separate from parseScanfValue's "c" case only because
  * getchar isn't format-string-driven at all; the underlying rule is
  * identical. */
-export function parseGetcharValue(raw: string): CValue | null {
+export function parseGetcharValue(raw: string): CScalarValue | null {
   if (raw.length === 0) return null;
-  return { type: "int", value: raw.charCodeAt(0) };
+  return scalar("int", raw.charCodeAt(0));
 }
 
 export function describeScanfSpecifier(specifier: ScanfSpecifier): string {

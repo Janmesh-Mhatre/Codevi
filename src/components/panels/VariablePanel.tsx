@@ -64,8 +64,14 @@ export function VariablePanel() {
                   }`}
                 >
                   <td className="px-2 py-1 text-fg">{name}</td>
-                  <td className="px-2 py-1 text-fg-muted">{value.type}</td>
-                  <td className="px-2 py-1 text-fg">{formatExecutionValue(value)}</td>
+                  <td className="px-2 py-1 text-fg-muted">
+                    {value.type}
+                    {value.kind === "pointer" && " *"}
+                  </td>
+                  <td className="px-2 py-1 text-fg">
+                    {value.kind === "pointer" && "→ "}
+                    {formatExecutionValue(value)}
+                  </td>
                   <td className="px-2 py-1 text-fg-muted">{kind}</td>
                 </tr>
               ))}

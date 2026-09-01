@@ -1,8 +1,10 @@
-import { describe, expect, it } from "vitest";
-import { parseC } from "./helpers/interpreterTestHelpers";
+import { afterEach, describe, expect, it } from "vitest";
+import { cleanupParsedTrees, parseC } from "./helpers/interpreterTestHelpers";
 import { interpretProgram } from "../../src/languages/c/interpreter/interpreter";
 import type { InputResumeValue, InterpreterStep } from "../../src/languages/c/interpreter/types";
 import type { CValue } from "../../src/languages/c/interpreter/values";
+
+afterEach(cleanupParsedTrees);
 
 /** Drives interpretProgram to completion, feeding `inputs` (in order)
  * into every input-request it hits and accumulating everything it
@@ -52,7 +54,7 @@ describe("Phase 4.1 required scenarios", () => {
     `);
     const { output, result } = runProgram(root);
     expect(output).toBe("x = 10, y = 20\n");
-    expect(result).toEqual({ type: "int", value: 0 });
+    expect(result).toEqual({ kind: "scalar", type: "int", value: 0 });
   });
 
   it("multiple printf calls accumulate in order", async () => {
@@ -98,9 +100,9 @@ describe("Phase 4.1 required scenarios", () => {
           return age;
       }
     `);
-    const { steps, result, error } = runProgram(root, [{ type: "int", value: 21 }]);
+    const { steps, result, error } = runProgram(root, [{ kind: "scalar", type: "int", value: 21 }]);
     expect(error).toBeUndefined();
-    expect(result).toEqual({ type: "int", value: 21 });
+    expect(result).toEqual({ kind: "scalar", type: "int", value: 21 });
 
     const inputStep = steps.find((s) => s.kind === "input-request");
     expect(inputStep).toBeDefined();
@@ -118,9 +120,9 @@ describe("Phase 4.1 required scenarios", () => {
           return 0;
       }
     `);
-    const { output, result } = runProgram(root, [{ type: "int", value: 30 }]);
+    const { output, result } = runProgram(root, [{ kind: "scalar", type: "int", value: 30 }]);
     expect(output).toBe("Enter age: Your age is 30\n");
-    expect(result).toEqual({ type: "int", value: 0 });
+    expect(result).toEqual({ kind: "scalar", type: "int", value: 0 });
   });
 
   it("cancelling a pending input produces a clean error, not a corrupted state", async () => {
@@ -146,8 +148,8 @@ describe("additional stdio interpreter coverage", () => {
           return ch;
       }
     `);
-    const { result } = runProgram(root, [{ type: "char", value: 65 }]);
-    expect(result).toEqual({ type: "int", value: 65 }); // 'A'
+    const { result } = runProgram(root, [{ kind: "scalar", type: "char", value: 65 }]);
+    expect(result).toEqual({ kind: "scalar", type: "int", value: 65 }); // 'A'
   });
 
   it("scanf with multiple specifiers requests each value in order", async () => {
@@ -160,10 +162,10 @@ describe("additional stdio interpreter coverage", () => {
       }
     `);
     const { steps, result } = runProgram(root, [
-      { type: "int", value: 3 },
-      { type: "int", value: 4 },
+      { kind: "scalar", type: "int", value: 3 },
+      { kind: "scalar", type: "int", value: 4 },
     ]);
-    expect(result).toEqual({ type: "int", value: 7 });
+    expect(result).toEqual({ kind: "scalar", type: "int", value: 7 });
     expect(steps.filter((s) => s.kind === "input-request")).toHaveLength(2);
   });
 

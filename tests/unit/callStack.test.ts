@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
-import { parseC, runCollectingSteps } from "./helpers/interpreterTestHelpers";
+import { afterEach, describe, expect, it } from "vitest";
+import { cleanupParsedTrees, parseC, runCollectingSteps } from "./helpers/interpreterTestHelpers";
+
+afterEach(cleanupParsedTrees);
 
 describe("Phase 4: call stack and scope data", () => {
   it("a block-scoped variable only appears in steps while its scope is active", async () => {
@@ -16,7 +18,7 @@ describe("Phase 4: call stack and scope data", () => {
       }
     `);
     const { history, result } = runCollectingSteps(root);
-    expect(result).toEqual({ type: "int", value: 20 });
+    expect(result).toEqual({ kind: "scalar", type: "int", value: 20 });
 
     const stepsWithB = history.filter((s) => "b" in s.variables);
     const stepsWithoutB = history.filter((s) => !("b" in s.variables));
@@ -27,7 +29,7 @@ describe("Phase 4: call stack and scope data", () => {
     const returnStep = history.find((s) => s.description.startsWith("return"));
     expect(returnStep).toBeDefined();
     expect(returnStep!.variables).not.toHaveProperty("b");
-    expect(returnStep!.variables.a).toEqual({ type: "int", value: 20 });
+    expect(returnStep!.variables.a).toEqual({ kind: "scalar", type: "int", value: 20 });
   });
 
   it("reports a single frame (main) for a program with no function calls", async () => {
@@ -57,7 +59,7 @@ describe("Phase 4: call stack and scope data", () => {
       }
     `);
     const { history, result } = runCollectingSteps(root);
-    expect(result).toEqual({ type: "int", value: 25 });
+    expect(result).toEqual({ kind: "scalar", type: "int", value: 25 });
 
     const depths = history.map((s) => s.callStack.map((f) => f.functionName));
     expect(depths).toContainEqual(["main"]);
@@ -69,9 +71,9 @@ describe("Phase 4: call stack and scope data", () => {
 
     // While inside square, its parameter shows up correctly.
     const insideSquare = history.find((s) => s.callStack.map((f) => f.functionName).join() === "main,square" && "n" in s.variables);
-    expect(insideSquare?.variables.n).toEqual({ type: "int", value: 5 });
+    expect(insideSquare?.variables.n).toEqual({ kind: "scalar", type: "int", value: 5 });
     const squareFrame = insideSquare?.callStack.find((f) => f.functionName === "square");
-    expect(squareFrame?.parameters).toEqual({ n: { type: "int", value: 5 } });
+    expect(squareFrame?.parameters).toEqual({ n: { kind: "scalar", type: "int", value: 5 } });
   });
 
   it("frames appear and disappear correctly across two independent calls", async () => {
@@ -85,7 +87,7 @@ describe("Phase 4: call stack and scope data", () => {
       }
     `);
     const { history, result } = runCollectingSteps(root);
-    expect(result).toEqual({ type: "int", value: 20 }); // (2+3) * 4
+    expect(result).toEqual({ kind: "scalar", type: "int", value: 20 }); // (2+3) * 4
 
     const sequenceOfInnerFrames = history
       .map((s) => s.callStack[s.callStack.length - 1]?.functionName)
@@ -102,7 +104,7 @@ describe("Phase 4: call stack and scope data", () => {
       int main(void) { return factorial(5); }
     `);
     const { history, result } = runCollectingSteps(root);
-    expect(result).toEqual({ type: "int", value: 120 });
+    expect(result).toEqual({ kind: "scalar", type: "int", value: 120 });
 
     const maxDepth = Math.max(...history.map((s) => s.callStack.length));
     // main + 5 nested factorial calls (5,4,3,2,1) = 6 frames at the deepest point.

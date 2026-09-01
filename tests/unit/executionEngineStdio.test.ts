@@ -1,7 +1,7 @@
-import { vi, describe, expect, it, beforeAll } from "vitest";
-import { Parser, Language } from "web-tree-sitter";
-import path from "node:path";
+import { vi, describe, expect, it, beforeAll, afterEach } from "vitest";
+import type { Parser } from "web-tree-sitter";
 import type { ExecutionState } from "../../src/execution/models/executionTypes";
+import { getParser } from "./helpers/interpreterTestHelpers";
 
 // ExecutionEngine depends on parserService only through getCurrentTree()/
 // getLastDiagnostics() (see docs/PHASE_3_EXECUTION.md -> "Clean layering").
@@ -12,8 +12,7 @@ import type { ExecutionState } from "../../src/execution/models/executionTypes";
 // was already verified to bundle and serve these files correctly, see
 // docs/PHASE_2_PARSER.md). Mocking parserService at the module boundary
 // tests ExecutionEngine's own scheduling/status logic for real while
-// sidestepping that gap, using the same direct-path WASM loading the
-// other test files already use successfully.
+// sidestepping that gap.
 let mockTree: import("web-tree-sitter").Tree | null = null;
 vi.mock("../../src/services/parserService", () => ({
   getCurrentTree: () => mockTree,
@@ -35,10 +34,16 @@ async function waitFor(getState: () => ExecutionState, predicate: (state: Execut
 let parser: InstanceType<typeof Parser>;
 
 beforeAll(async () => {
-  await Parser.init({ locateFile: () => path.resolve(__dirname, "../../node_modules/web-tree-sitter/web-tree-sitter.wasm") });
-  const C = await Language.load(path.resolve(__dirname, "../../node_modules/tree-sitter-c/tree-sitter-c.wasm"));
-  parser = new Parser();
-  parser.setLanguage(C);
+  // Reuses interpreterTestHelpers.ts's shared singleton rather than
+  // calling Parser.init()/Language.load() again — see
+  // docs/PHASE_5_POINTERS.md -> "A test-infrastructure crash, not an
+  // application bug" for why a second independent instantiation matters.
+  parser = await getParser();
+});
+
+afterEach(() => {
+  mockTree?.delete();
+  mockTree = null;
 });
 
 function setSource(source: string): void {
@@ -82,7 +87,7 @@ describe("ExecutionEngine + stdio (Phase 4.1)", () => {
     const finalState = await waitFor(() => engine.getState(), (s) => s.status === "completed" || s.status === "error");
     expect(finalState.status).toBe("completed");
     expect(finalState.output).toBe("Enter age: Your age is 30\n");
-    expect(finalState.currentStep?.variables.age).toEqual({ type: "int", value: 30 });
+    expect(finalState.currentStep?.variables.age).toEqual({ kind: "scalar", type: "int", value: 30 });
   });
 
   it("invalid scanf input is rejected without corrupting state, and a retry succeeds", async () => {
@@ -105,7 +110,7 @@ describe("ExecutionEngine + stdio (Phase 4.1)", () => {
     engine.provideInput("21");
     const finalState = await waitFor(() => engine.getState(), (s) => s.status === "completed" || s.status === "error");
     expect(finalState.status).toBe("completed");
-    expect(finalState.returnValue).toEqual({ type: "int", value: 21 });
+    expect(finalState.returnValue).toEqual({ kind: "scalar", type: "int", value: 21 });
   });
 
   it("Reset clears pending input state cleanly", async () => {
@@ -131,7 +136,7 @@ describe("ExecutionEngine + stdio (Phase 4.1)", () => {
     expect(waitingAgain.pendingInput?.specifier).toBe("d");
     engine.provideInput("5");
     const completed = await waitFor(() => engine.getState(), (s) => s.status === "completed");
-    expect(completed.returnValue).toEqual({ type: "int", value: 5 });
+    expect(completed.returnValue).toEqual({ kind: "scalar", type: "int", value: 5 });
   });
 
   it("Step Forward cannot skip a pending input request", async () => {

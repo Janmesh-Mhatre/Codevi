@@ -32,8 +32,8 @@ describe("printf format string parsing and rendering", () => {
 
   it("renders x = 10, y = 20 (the Phase 4.1 brief's exact printf example)", () => {
     const output = renderPrintf("x = %d, y = %d\n", [
-      { kind: "value", value: { type: "int", value: 10 } },
-      { kind: "value", value: { type: "int", value: 20 } },
+      { kind: "value", value: { kind: "scalar", type: "int", value: 10 } },
+      { kind: "value", value: { kind: "scalar", type: "int", value: 20 } },
     ]);
     expect(output).toBe("x = 10, y = 20\n");
   });
@@ -44,21 +44,21 @@ describe("printf format string parsing and rendering", () => {
   });
 
   it("renders %f with six decimal places, matching real printf's default", () => {
-    const output = renderPrintf("%f", [{ kind: "value", value: { type: "float", value: 3.5 } }]);
+    const output = renderPrintf("%f", [{ kind: "value", value: { kind: "scalar", type: "float", value: 3.5 } }]);
     expect(output).toBe("3.500000");
   });
 
   it("renders %c as a character, not its numeric code", () => {
-    const output = renderPrintf("%c", [{ kind: "value", value: { type: "char", value: 65 } }]);
+    const output = renderPrintf("%c", [{ kind: "value", value: { kind: "scalar", type: "char", value: 65 } }]);
     expect(output).toBe("A");
   });
 
   it("throws a clear error when there are fewer arguments than specifiers, instead of printing garbage", () => {
-    expect(() => renderPrintf("%d %d", [{ kind: "value", value: { type: "int", value: 1 } }])).toThrow(/expects more arguments/);
+    expect(() => renderPrintf("%d %d", [{ kind: "value", value: { kind: "scalar", type: "int", value: 1 } }])).toThrow(/expects more arguments/);
   });
 
   it("throws when %s is given a non-string argument", () => {
-    expect(() => renderPrintf("%s", [{ kind: "value", value: { type: "int", value: 1 } }])).toThrow(/string literal/);
+    expect(() => renderPrintf("%s", [{ kind: "value", value: { kind: "scalar", type: "int", value: 1 } }])).toThrow(/string literal/);
   });
 });
 
@@ -78,11 +78,11 @@ describe("scanf format parsing", () => {
 
 describe("scanf value validation", () => {
   it("accepts a plain integer for %d", () => {
-    expect(parseScanfValue("21", "d")).toEqual({ type: "int", value: 21 });
+    expect(parseScanfValue("21", "d")).toEqual({ kind: "scalar", type: "int", value: 21 });
   });
 
   it("accepts a negative integer", () => {
-    expect(parseScanfValue("-5", "i")).toEqual({ type: "int", value: -5 });
+    expect(parseScanfValue("-5", "i")).toEqual({ kind: "scalar", type: "int", value: -5 });
   });
 
   it("rejects non-numeric input for %d instead of coercing it to 0 or NaN", () => {
@@ -94,11 +94,11 @@ describe("scanf value validation", () => {
   });
 
   it("accepts a float for %f", () => {
-    expect(parseScanfValue("3.5", "f")).toEqual({ type: "float", value: 3.5 });
+    expect(parseScanfValue("3.5", "f")).toEqual({ kind: "scalar", type: "float", value: 3.5 });
   });
 
   it("accepts a bare integer string for %f too", () => {
-    expect(parseScanfValue("4", "f")).toEqual({ type: "float", value: 4 });
+    expect(parseScanfValue("4", "f")).toEqual({ kind: "scalar", type: "float", value: 4 });
   });
 
   it("rejects empty input", () => {
@@ -107,17 +107,17 @@ describe("scanf value validation", () => {
   });
 
   it("accepts a single character for %c", () => {
-    expect(parseScanfValue("A", "c")).toEqual({ type: "char", value: 65 });
+    expect(parseScanfValue("A", "c")).toEqual({ kind: "scalar", type: "char", value: 65 });
   });
 
   it("takes only the first character for %c given more input", () => {
-    expect(parseScanfValue("ABC", "c")).toEqual({ type: "char", value: 65 });
+    expect(parseScanfValue("ABC", "c")).toEqual({ kind: "scalar", type: "char", value: 65 });
   });
 });
 
 describe("getchar value validation", () => {
   it("returns the character code of the first character", () => {
-    expect(parseGetcharValue("A")).toEqual({ type: "int", value: 65 });
+    expect(parseGetcharValue("A")).toEqual({ kind: "scalar", type: "int", value: 65 });
   });
 
   it("rejects empty input", () => {

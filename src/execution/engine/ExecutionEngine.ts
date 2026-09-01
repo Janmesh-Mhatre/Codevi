@@ -1,6 +1,8 @@
 import { interpretProgram } from "../../languages/c/interpreter/interpreter";
-import type { CValue } from "../../languages/c/interpreter/values";
+import { formatPointerType, type CValue } from "../../languages/c/interpreter/values";
+import { formatAddress } from "../../languages/c/interpreter/memory";
 import type { InputRequest, InputResumeValue, InterpreterStep, StackFrameSnapshot } from "../../languages/c/interpreter/types";
+import type { MemoryModel } from "../../languages/c/interpreter/memory";
 import { parseScanfValue, describeScanfSpecifier } from "../../languages/c/interpreter/stdio";
 import { getCurrentTree, getLastDiagnostics } from "../../services/parserService";
 import { scope } from "../../utils/logger";
@@ -10,6 +12,7 @@ import {
   type ExecutionState,
   type ExecutionStep,
   type ExecutionValue,
+  type HeapBlock,
   type StackFrame,
 } from "../models/executionTypes";
 
@@ -35,10 +38,17 @@ const MAX_LOG_ENTRIES = 50;
 
 let logIdCounter = 0;
 
+function toPlainValue(value: CValue): ExecutionValue {
+  if (value.kind === "pointer") {
+    return { kind: "pointer", type: formatPointerType(value.pointerType.pointee), target: value.target };
+  }
+  return { kind: "scalar", type: value.type, value: value.value };
+}
+
 function toPlainValues(values: Record<string, CValue>): Record<string, ExecutionValue> {
   const result: Record<string, ExecutionValue> = {};
   for (const [name, value] of Object.entries(values)) {
-    result[name] = { type: value.type, value: value.value };
+    result[name] = toPlainValue(value);
   }
   return result;
 }
@@ -50,8 +60,24 @@ function toStackFrame(frame: StackFrameSnapshot, isActive: boolean): StackFrame 
     line: frame.line,
     parameters: toPlainValues(frame.parameters),
     locals: toPlainValues(frame.locals),
+    addresses: frame.addresses,
     isActive,
   };
+}
+
+/** Every heap allocation made so far this run, active or freed — freed
+ * blocks are kept (not dropped) so the Memory/Visualization tab can show
+ * a block as freed rather than have it silently vanish. See
+ * docs/PHASE_5_POINTERS.md → "Heap visualization". */
+function toHeapBlocks(memory: MemoryModel): HeapBlock[] {
+  return memory.allAllocations().map((allocation) => ({
+    address: allocation.address,
+    slotCount: allocation.slotCount,
+    byteSize: allocation.byteSize,
+    active: allocation.active,
+    origin: allocation.origin,
+    values: memory.slotValues(allocation.address).map(toPlainValue),
+  }));
 }
 
 function toExecutionStep(step: InterpreterStep): ExecutionStep {
@@ -67,6 +93,7 @@ function toExecutionStep(step: InterpreterStep): ExecutionStep {
     description: step.description,
     variables: toPlainValues(step.variables),
     callStack,
+    heap: toHeapBlocks(step.memory),
   };
 }
 
@@ -285,11 +312,14 @@ export class ExecutionEngine {
   }
 
   private finish(result: CValue | undefined): void {
-    this.setState({
-      status: "completed",
-      returnValue: result ? { type: result.type, value: result.value } : null,
-    });
-    this.appendLog(result ? `Execution completed — returned ${result.value}` : "Execution completed", "info");
+    const returnValue = result ? toPlainValue(result) : null;
+    this.setState({ status: "completed", returnValue });
+    const description = returnValue
+      ? returnValue.kind === "pointer"
+        ? `${returnValue.type} (${returnValue.target ? formatAddress(returnValue.target) : "NULL"})`
+        : String(returnValue.value)
+      : null;
+    this.appendLog(description ? `Execution completed — returned ${description}` : "Execution completed", "info");
   }
 
   private fail(message: string): void {

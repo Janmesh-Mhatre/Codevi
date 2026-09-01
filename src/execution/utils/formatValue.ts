@@ -1,10 +1,14 @@
 import type { ExecutionValue } from "../models/executionTypes";
+import { formatAddress } from "../../languages/c/interpreter/memory";
 
 /** Formats one runtime value for display — shared by VariablePanel,
- * MemoryPanel, and StackPanel so a `char` reads as `'a'` (65)` etc.
- * consistently everywhere rather than three slightly different
- * implementations. */
+ * MemoryPanel, and StackPanel so a `char` reads as `'a'` (65)` and a
+ * pointer reads as an address or `NULL` consistently everywhere,
+ * rather than several slightly different implementations. */
 export function formatExecutionValue(value: ExecutionValue): string {
+  if (value.kind === "pointer") {
+    return value.target ? formatAddress(value.target) : "NULL";
+  }
   if (value.type === "char") {
     const code = value.value;
     const printable = code >= 32 && code <= 126;
