@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanupParsedTrees, parseC, runCollectingSteps } from "./helpers/interpreterTestHelpers";
-import { InterpreterError } from "../../src/languages/c/interpreter/types";
+import { cleanupParsedTrees, parseC, runCollectingSteps } from "../helpers/interpreterTestHelpers";
+import { InterpreterError } from "../../../src/interpreter/types";
 
 // Split from a single pointers.test.ts into four files (Basics/Heap/
 // Safety/Misc) — see docs/PHASE_5_POINTERS.md -> "A test-infrastructure

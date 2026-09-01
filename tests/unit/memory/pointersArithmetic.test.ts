@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanupParsedTrees, parseC, runCollectingSteps } from "./helpers/interpreterTestHelpers";
-import { InterpreterError } from "../../src/languages/c/interpreter/types";
+import { cleanupParsedTrees, parseC, runCollectingSteps } from "../helpers/interpreterTestHelpers";
+import { InterpreterError } from "../../../src/interpreter/types";
 
 // See pointersBasics.test.ts's top comment for why pointer coverage is
 // split across several small files.

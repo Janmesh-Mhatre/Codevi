@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { ChevronRight } from "lucide-react";
-import type { AstNode } from "../../languages/c/astTypes";
+import type { AstNode } from "../../parser/astTypes";
 
 const DEFAULT_EXPANDED_DEPTH = 2;
 

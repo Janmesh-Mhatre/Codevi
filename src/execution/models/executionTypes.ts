@@ -1,5 +1,5 @@
-import type { ScanfSpecifier } from "../../languages/c/interpreter/stdio";
-import type { Address } from "../../languages/c/interpreter/memory";
+import type { ScanfSpecifier } from "../../stdlib/stdio";
+import type { Address } from "../../memory/memory";
 
 export type ExecutionStatus = "idle" | "preparing" | "running" | "paused" | "waiting-for-input" | "completed" | "error";
 

@@ -1,7 +1,7 @@
 import { vi, describe, expect, it, beforeAll, afterEach } from "vitest";
 import type { Parser } from "web-tree-sitter";
-import type { ExecutionState } from "../../src/execution/models/executionTypes";
-import { getParser } from "./helpers/interpreterTestHelpers";
+import type { ExecutionState } from "../../../src/execution/models/executionTypes";
+import { getParser } from "../helpers/interpreterTestHelpers";
 
 // ExecutionEngine depends on parserService only through getCurrentTree()/
 // getLastDiagnostics() (see docs/PHASE_3_EXECUTION.md -> "Clean layering").
@@ -14,12 +14,12 @@ import { getParser } from "./helpers/interpreterTestHelpers";
 // tests ExecutionEngine's own scheduling/status logic for real while
 // sidestepping that gap.
 let mockTree: import("web-tree-sitter").Tree | null = null;
-vi.mock("../../src/services/parserService", () => ({
+vi.mock("../../../src/parser/parserService", () => ({
   getCurrentTree: () => mockTree,
   getLastDiagnostics: () => [],
 }));
 
-const { ExecutionEngine } = await import("../../src/execution/engine/ExecutionEngine");
+const { ExecutionEngine } = await import("../../../src/execution/engine/ExecutionEngine");
 
 async function waitFor(getState: () => ExecutionState, predicate: (state: ExecutionState) => boolean, timeoutMs = 2000): Promise<ExecutionState> {
   const start = Date.now();

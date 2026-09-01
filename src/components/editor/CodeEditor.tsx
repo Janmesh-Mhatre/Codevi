@@ -4,7 +4,7 @@ import * as monaco from "monaco-editor";
 import { useCParser } from "../../hooks/useCParser";
 import { useParserStore } from "../../state/parserStore";
 import { useExecutionStore } from "../../state/executionStore";
-import type { TextChange } from "../../services/parserService";
+import type { TextChange } from "../../parser/parserService";
 // Vite's `?worker` suffix bundles each worker as a local asset. This is
 // what keeps Monaco fully offline — without it, @monaco-editor/react
 // falls back to fetching Monaco from a CDN at runtime, which breaks the

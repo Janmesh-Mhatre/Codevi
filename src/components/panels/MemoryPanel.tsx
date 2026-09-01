@@ -2,7 +2,7 @@ import { MemoryStick } from "lucide-react";
 import { PanelShell } from "../common/PanelShell";
 import { useExecutionStore } from "../../state/executionStore";
 import { formatExecutionValue } from "../../execution/utils/formatValue";
-import { formatAddress } from "../../languages/c/interpreter/memory";
+import { formatAddress } from "../../memory/memory";
 
 /**
  * Live as of Phase 4, extended in Phase 5 with real (simulated)

@@ -1,9 +1,9 @@
 import { Parser, Language } from "web-tree-sitter";
 import path from "node:path";
 import type { Node as SyntaxNode, Tree } from "web-tree-sitter";
-import { interpretProgram } from "../../../src/languages/c/interpreter/interpreter";
-import type { CValue } from "../../../src/languages/c/interpreter/values";
-import type { InterpreterStep } from "../../../src/languages/c/interpreter/types";
+import { interpretProgram } from "../../../src/interpreter/interpreter";
+import type { CValue } from "../../../src/interpreter/values";
+import type { InterpreterStep } from "../../../src/interpreter/types";
 
 let parserPromise: Promise<InstanceType<typeof Parser>> | null = null;
 

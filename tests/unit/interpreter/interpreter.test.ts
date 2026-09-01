@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanupParsedTrees, parseC, run, runCollectingSteps } from "./helpers/interpreterTestHelpers";
-import { CRuntimeError } from "../../src/languages/c/interpreter/values";
-import { InterpreterError } from "../../src/languages/c/interpreter/types";
+import { cleanupParsedTrees, parseC, run, runCollectingSteps } from "../helpers/interpreterTestHelpers";
+import { CRuntimeError } from "../../../src/interpreter/values";
+import { InterpreterError } from "../../../src/interpreter/types";
 
 afterEach(cleanupParsedTrees);
 

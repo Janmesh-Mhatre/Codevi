@@ -1,5 +1,5 @@
 import type { Node as SyntaxNode } from "web-tree-sitter";
-import { scalar, type CScalarValue, type CType } from "./values";
+import { scalar, type CScalarValue, type CType } from "../interpreter/values";
 
 /**
  * Everything format-string/format-specifier related for printf/scanf/

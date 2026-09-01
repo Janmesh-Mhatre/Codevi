@@ -1,5 +1,5 @@
-import type { CValue } from "./values";
-import { CRuntimeError } from "./values";
+import type { CValue } from "../interpreter/values";
+import { CRuntimeError } from "../interpreter/values";
 
 /**
  * Codevi's simulated address space (Phase 5).

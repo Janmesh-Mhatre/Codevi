@@ -1,10 +1,10 @@
-import { interpretProgram } from "../../languages/c/interpreter/interpreter";
-import { formatPointerType, type CValue } from "../../languages/c/interpreter/values";
-import { formatAddress } from "../../languages/c/interpreter/memory";
-import type { InputRequest, InputResumeValue, InterpreterStep, StackFrameSnapshot } from "../../languages/c/interpreter/types";
-import type { MemoryModel } from "../../languages/c/interpreter/memory";
-import { parseScanfValue, describeScanfSpecifier } from "../../languages/c/interpreter/stdio";
-import { getCurrentTree, getLastDiagnostics } from "../../services/parserService";
+import { interpretProgram } from "../../interpreter/interpreter";
+import { formatPointerType, type CValue } from "../../interpreter/values";
+import { formatAddress } from "../../memory/memory";
+import type { InputRequest, InputResumeValue, InterpreterStep, StackFrameSnapshot } from "../../interpreter/types";
+import type { MemoryModel } from "../../memory/memory";
+import { parseScanfValue, describeScanfSpecifier } from "../../stdlib/stdio";
+import { getCurrentTree, getLastDiagnostics } from "../../parser/parserService";
 import { scope } from "../../utils/logger";
 import {
   INITIAL_EXECUTION_STATE,

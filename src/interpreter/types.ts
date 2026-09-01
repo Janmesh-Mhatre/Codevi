@@ -1,8 +1,8 @@
 import type { Node as SyntaxNode } from "web-tree-sitter";
 import type { Scope } from "./scope";
-import type { Address, MemoryModel } from "./memory";
+import type { Address, MemoryModel } from "../memory/memory";
 import type { CValue } from "./values";
-import type { ScanfSpecifier } from "./stdio";
+import type { ScanfSpecifier } from "../stdlib/stdio";
 
 /**
  * A live entry on the interpreter's call stack (Phase 4). One of these

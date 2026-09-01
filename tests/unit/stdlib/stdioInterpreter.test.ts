@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanupParsedTrees, parseC } from "./helpers/interpreterTestHelpers";
-import { interpretProgram } from "../../src/languages/c/interpreter/interpreter";
-import type { InputResumeValue, InterpreterStep } from "../../src/languages/c/interpreter/types";
-import type { CValue } from "../../src/languages/c/interpreter/values";
+import { cleanupParsedTrees, parseC } from "../helpers/interpreterTestHelpers";
+import { interpretProgram } from "../../../src/interpreter/interpreter";
+import type { InputResumeValue, InterpreterStep } from "../../../src/interpreter/types";
+import type { CValue } from "../../../src/interpreter/values";
 
 afterEach(cleanupParsedTrees);
 

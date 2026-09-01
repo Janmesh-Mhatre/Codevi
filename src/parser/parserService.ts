@@ -5,8 +5,8 @@ import type { Tree, Point } from "web-tree-sitter";
 // offline requirement from the Phase 0 blueprint.
 import webTreeSitterWasmUrl from "web-tree-sitter/web-tree-sitter.wasm?url";
 import treeSitterCWasmUrl from "tree-sitter-c/tree-sitter-c.wasm?url";
-import { convertToAstNode, collectDiagnostics, countAllNodes } from "../languages/c/astConvert";
-import type { AstNode, ParseResult, SyntaxDiagnostic } from "../languages/c/astTypes";
+import { convertToAstNode, collectDiagnostics, countAllNodes } from "./astConvert";
+import type { AstNode, ParseResult, SyntaxDiagnostic } from "./astTypes";
 import { scope } from "../utils/logger";
 
 const log = scope("parserService");

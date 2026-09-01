@@ -1,5 +1,5 @@
-import type { Address } from "./memory";
-import { addressesEqual, formatAddress } from "./memory";
+import type { Address } from "../memory/memory";
+import { addressesEqual, formatAddress } from "../memory/memory";
 
 /**
  * Runtime value representation for the interpreter.

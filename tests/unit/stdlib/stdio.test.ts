@@ -5,7 +5,7 @@ import {
   parseScanfFormat,
   parseScanfValue,
   parseGetcharValue,
-} from "../../src/languages/c/interpreter/stdio";
+} from "../../../src/stdlib/stdio";
 
 describe("printf format string parsing and rendering", () => {
   it("tokenizes plain text with no specifiers", () => {

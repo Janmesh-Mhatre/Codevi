@@ -1,5 +1,5 @@
 import type { ExecutionValue } from "../models/executionTypes";
-import { formatAddress } from "../../languages/c/interpreter/memory";
+import { formatAddress } from "../../memory/memory";
 
 /** Formats one runtime value for display — shared by VariablePanel,
  * MemoryPanel, and StackPanel so a `char` reads as `'a'` (65)` and a

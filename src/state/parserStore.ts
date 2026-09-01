@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { AstNode, ParseResult, SyntaxDiagnostic } from "../languages/c/astTypes";
+import type { AstNode, ParseResult, SyntaxDiagnostic } from "../parser/astTypes";
 
 type ParserStatus = "initializing" | "ready" | "error";
 

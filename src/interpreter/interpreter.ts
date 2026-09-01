@@ -1,6 +1,6 @@
 import type { Node as SyntaxNode } from "web-tree-sitter";
 import { Scope } from "./scope";
-import { MemoryModel, formatAddress, sizeOfType, type Address } from "./memory";
+import { MemoryModel, formatAddress, sizeOfType, type Address } from "../memory/memory";
 import {
   applyBinaryOp,
   applyUnaryOp,
@@ -38,7 +38,7 @@ import {
   renderPrintf,
   type PrintfArgument,
   type ScanfSpecifier,
-} from "./stdio";
+} from "../stdlib/stdio";
 
 const MAX_CALL_DEPTH = 200;
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanupParsedTrees, parseC, runCollectingSteps } from "./helpers/interpreterTestHelpers";
+import { cleanupParsedTrees, parseC, runCollectingSteps } from "../helpers/interpreterTestHelpers";
 
 afterEach(cleanupParsedTrees);
 

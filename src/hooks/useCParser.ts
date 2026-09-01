@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback } from "react";
-import { initParser, parseSource, type TextChange } from "../services/parserService";
+import { initParser, parseSource, type TextChange } from "../parser/parserService";
 import { useParserStore } from "../state/parserStore";
 import { useEditorStore } from "../state/editorStore";
 import { scope } from "../utils/logger";

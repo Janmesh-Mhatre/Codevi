@@ -1,5 +1,5 @@
-import type { Address } from "./memory";
-import type { MemoryModel } from "./memory";
+import type { Address } from "../memory/memory";
+import type { MemoryModel } from "../memory/memory";
 import type { CValue } from "./values";
 import { CRuntimeError } from "./values";
 
