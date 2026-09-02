@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { SquareTerminal } from "lucide-react";
+import { Minus, Plus, SquareTerminal } from "lucide-react";
 import { useParserStore } from "../../state/parserStore";
 import { cancelInput, provideInput, useExecutionStore } from "../../state/executionStore";
+import { useUIStore } from "../../state/uiStore";
 
 /**
  * Program stdout (Phase 4.1: printf/puts/putchar), syntax diagnostics
@@ -11,8 +12,10 @@ import { cancelInput, provideInput, useExecutionStore } from "../../state/execut
  * getchar(), an input field appears at the bottom — this is the *only*
  * way to satisfy a pending request; Step Forward and Run are disabled
  * for exactly this reason (see Toolbar.tsx).
+ *
+ * Can be independently hidden/shown via the toggle button in the header.
  */
-export function ConsolePanel() {
+export function ConsolePanel({ className = "", style }: { className?: string; style?: React.CSSProperties }) {
   const parserStatus = useParserStore((state) => state.status);
   const diagnostics = useParserStore((state) => state.diagnostics);
   const executionLog = useExecutionStore((state) => state.log);
@@ -20,6 +23,9 @@ export function ConsolePanel() {
   const output = useExecutionStore((state) => state.output);
   const pendingInput = useExecutionStore((state) => state.pendingInput);
   const inputError = useExecutionStore((state) => state.inputError);
+  const consoleHeight = useUIStore((state) => state.consoleHeight);
+  const isConsoleVisible = useUIStore((state) => state.isConsoleVisible);
+  const toggleConsole = useUIStore((state) => state.toggleConsole);
 
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -38,11 +44,46 @@ export function ConsolePanel() {
     setDraft("");
   };
 
+  if (!isConsoleVisible) {
+    return (
+      <div className={`flex h-[26px] shrink-0 items-center justify-between border-t border-border bg-surface-raised px-3 ${className}`}>
+        <button
+          type="button"
+          onClick={toggleConsole}
+          title="Show Console"
+          aria-label="Show Console"
+          className="flex items-center gap-1.5 text-xs text-fg-muted hover:text-fg transition-colors"
+        >
+          <SquareTerminal size={13} className="text-fg-muted" />
+          <span className="font-mono text-[11px]">Console</span>
+          {output !== "" && (
+            <span className="rounded bg-accent/15 px-1 py-0.2 text-[10px] text-accent font-medium">output</span>
+          )}
+          <Plus size={12} className="ml-1 text-fg-muted" />
+        </button>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex h-40 shrink-0 flex-col border-t border-border bg-surface">
-      <div className="flex shrink-0 items-center gap-2 border-b border-border bg-surface-raised px-3 py-2">
-        <SquareTerminal size={14} className="text-fg-muted" />
-        <h2 className="text-xs font-medium uppercase tracking-wide text-fg-muted">Console</h2>
+    <div
+      style={{ height: `${consoleHeight}px`, ...style }}
+      className={`flex shrink-0 flex-col border-t border-border bg-surface ${className}`}
+    >
+      <div className="flex shrink-0 items-center justify-between border-b border-border bg-surface-raised px-3 py-1.5">
+        <div className="flex items-center gap-2">
+          <SquareTerminal size={14} className="text-fg-muted" />
+          <h2 className="text-xs font-medium uppercase tracking-wide text-fg-muted">Console</h2>
+        </div>
+        <button
+          type="button"
+          onClick={toggleConsole}
+          title="Hide Console"
+          aria-label="Hide Console"
+          className="flex h-5 w-5 items-center justify-center rounded text-fg-muted hover:bg-surface hover:text-fg transition-colors"
+        >
+          <Minus size={13} />
+        </button>
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto p-3 font-mono text-sm text-fg-muted">

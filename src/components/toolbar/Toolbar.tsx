@@ -10,6 +10,7 @@ import {
   Settings,
   Sun,
   Moon,
+  Columns2,
 } from "lucide-react";
 import { useUIStore } from "../../state/uiStore";
 import { pauseExecution, resetExecution, runExecution, stepExecution, useExecutionStore } from "../../state/executionStore";
@@ -20,9 +21,10 @@ interface ToolbarButtonProps {
   onClick: () => void;
   variant?: "default" | "primary";
   disabled?: boolean;
+  active?: boolean;
 }
 
-function ToolbarButton({ label, icon: Icon, onClick, variant = "default", disabled = false }: ToolbarButtonProps) {
+function ToolbarButton({ label, icon: Icon, onClick, variant = "default", disabled = false, active = false }: ToolbarButtonProps) {
   return (
     <button
       type="button"
@@ -33,7 +35,9 @@ function ToolbarButton({ label, icon: Icon, onClick, variant = "default", disabl
       className={
         variant === "primary"
           ? "flex items-center gap-1.5 rounded-md bg-accent px-2.5 py-1.5 text-sm font-medium text-accent-fg hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:opacity-40"
-          : "flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-fg-muted hover:bg-surface-raised hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-muted"
+          : active
+            ? "flex items-center gap-1.5 rounded-md bg-surface-raised px-2.5 py-1.5 text-sm text-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-40"
+            : "flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-fg-muted hover:bg-surface-raised hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-muted"
       }
     >
       <Icon size={16} />
@@ -62,6 +66,8 @@ export function Toolbar() {
   const showToast = useUIStore((state) => state.showToast);
   const theme = useUIStore((state) => state.theme);
   const toggleTheme = useUIStore((state) => state.toggleTheme);
+  const isRightPanelVisible = useUIStore((state) => state.isRightPanelVisible);
+  const toggleRightPanel = useUIStore((state) => state.toggleRightPanel);
   const status = useExecutionStore((state) => state.status);
 
   const notImplemented = () => showToast("Feature not implemented yet.");
@@ -90,6 +96,13 @@ export function Toolbar() {
 
       <div className="flex-1" />
 
+      <ToolbarButton
+        label={isRightPanelVisible ? "Hide workspace panels" : "Show workspace panels"}
+        icon={Columns2}
+        onClick={toggleRightPanel}
+        active={isRightPanelVisible}
+      />
+      <Divider />
       <ToolbarButton
         label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
         icon={theme === "dark" ? Sun : Moon}

@@ -1,27 +1,33 @@
+import { Layers, MemoryStick } from "lucide-react";
 import { useExecutionStore } from "../../state/executionStore";
 import { formatExecutionValue } from "../../execution/utils/formatValue";
 import { formatAddress, type Address } from "../../memory/memory";
-import type { ExecutionValue, HeapBlock } from "../../execution/models/executionTypes";
+import type { ExecutionValue, HeapBlock, StackFrame } from "../../execution/models/executionTypes";
+
+function formatParameters(parameters: Record<string, ExecutionValue>): string {
+  const entries = Object.entries(parameters);
+  if (entries.length === 0) return "()";
+  return `(${entries.map(([name, value]) => `${name}=${formatExecutionValue(value)}`).join(", ")})`;
+}
+
+type VizEntry = { name: string; value: ExecutionValue; address: Address | undefined };
 
 /**
- * Live visualization of stack–heap memory layout (Phase 5.1). Shows:
- * - Stack section: each variable with address, type, and value
- * - Heap section: each allocation with ID, size, origin, status, values
- * - Pointer relationships: visual indicators from pointers to targets
- * - Freed blocks: shown dimmed with danger border
- * - Pointer-to-pointer chains: pp → p → x displayed inline
- * - Multiple pointers to same target: all shown referencing same block
+ * Live visualization of stack–heap memory layout (Phase 5.1).
  *
- * Pure React + CSS — no external graph library, keeping it lightweight.
- * Two-column layout: Stack on left, Heap on right.
+ * Designed to visually match the Stack panel (call stack) in structure,
+ * typography, badges, and card borders while preserving the distinct color
+ * coding:
+ * - Stack: blueprint blue (`accent` tokens)
+ * - Heap: amber (`active` tokens), danger for freed blocks
  */
 export function VisualizationPanel() {
   const status = useExecutionStore((state) => state.status);
   const currentStep = useExecutionStore((state) => state.currentStep);
-  const activeFrame = currentStep?.callStack.find((frame) => frame.isActive) ?? null;
   const heap = currentStep?.heap ?? [];
+  const frames = currentStep?.callStack ? [...currentStep.callStack].reverse() : [];
 
-  if (!activeFrame || status === "idle") {
+  if (!currentStep || frames.length === 0 || status === "idle") {
     return (
       <div className="bg-blueprint-grid flex h-full flex-col items-center justify-center gap-1 p-6 text-center">
         <p className="text-sm font-medium text-fg-muted">Memory visualization</p>
@@ -32,33 +38,35 @@ export function VisualizationPanel() {
     );
   }
 
-  const allVars = { ...activeFrame.parameters, ...activeFrame.locals };
-  const entries = Object.entries(allVars).map(([name, value]) => ({
-    name,
-    value,
-    address: activeFrame.addresses[name],
-  }));
+  // Flatten all stack entries across all frames so pointers can resolve targets
+  const allEntries: VizEntry[] = frames.flatMap((frame) => {
+    const allVars = { ...frame.parameters, ...frame.locals };
+    return Object.entries(allVars).map(([name, value]) => ({
+      name,
+      value,
+      address: frame.addresses[name],
+    }));
+  });
 
   return (
-    <div className="flex h-full overflow-auto bg-canvas/50 p-4 gap-6">
+    <div className="flex h-full overflow-auto bg-canvas/50 p-3 gap-4">
       {/* STACK COLUMN */}
-      <div className="flex flex-col gap-2 min-w-[200px]">
-        <div className="text-[11px] font-semibold uppercase tracking-widest text-accent mb-1">
-          Stack
+      <div className="flex flex-1 min-w-[220px] flex-col gap-2">
+        <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-widest text-accent mb-0.5">
+          <Layers size={13} />
+          <span>Stack</span>
         </div>
-        {entries.length === 0 ? (
-          <div className="rounded border border-border bg-surface px-3 py-2 text-xs text-fg-muted">
-            No variables
+
+        {frames.length === 0 ? (
+          <div className="rounded-md border border-border bg-surface-raised p-3 text-center text-xs text-fg-muted">
+            No active stack frames
           </div>
         ) : (
-          entries.map(({ name, value, address }) => (
-            <StackVarCard
-              key={name}
-              name={name}
-              value={value}
-              address={address ? formatAddress(address) : "—"}
-              allVars={allVars}
-              allEntries={entries}
+          frames.map((frame) => (
+            <StackFrameCard
+              key={`${frame.callDepth}-${frame.functionName}`}
+              frame={frame}
+              allEntries={allEntries}
               heap={heap}
             />
           ))
@@ -66,12 +74,14 @@ export function VisualizationPanel() {
       </div>
 
       {/* HEAP COLUMN */}
-      <div className="flex flex-col gap-2 min-w-[220px]">
-        <div className="text-[11px] font-semibold uppercase tracking-widest text-active mb-1">
-          Heap
+      <div className="flex flex-1 min-w-[220px] flex-col gap-2">
+        <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-widest text-active mb-0.5">
+          <MemoryStick size={13} />
+          <span>Heap</span>
         </div>
+
         {heap.length === 0 ? (
-          <div className="rounded border border-border bg-surface px-3 py-2 text-xs text-fg-muted">
+          <div className="rounded-md border border-border bg-surface-raised p-3 text-center text-xs text-fg-muted">
             No heap allocations
           </div>
         ) : (
@@ -79,7 +89,7 @@ export function VisualizationPanel() {
             <HeapBlockCard
               key={formatAddress(block.address)}
               block={block}
-              stackEntries={entries}
+              stackEntries={allEntries}
             />
           ))
         )}
@@ -88,69 +98,100 @@ export function VisualizationPanel() {
   );
 }
 
-type VizEntry = { name: string; value: ExecutionValue; address: Address | undefined };
-
-interface StackVarCardProps {
-  name: string;
-  value: ExecutionValue;
-  address: string;
-  allVars: Record<string, ExecutionValue>;
+interface StackFrameCardProps {
+  frame: StackFrame;
   allEntries: VizEntry[];
   heap: HeapBlock[];
 }
 
-function StackVarCard({ name, value, address, allVars, allEntries, heap }: StackVarCardProps) {
-  const isPtr = value.kind === "pointer";
-  const isNull = isPtr && !value.target;
-  const targetAddr = isPtr && value.target ? formatAddress(value.target) : null;
-
-  // Determine target label
-  let targetLabel = "";
-  if (isPtr && value.target) {
-    if (value.target.space === "heap") {
-      const heapBlock = heap.find((b) => b.address.id === value.target!.id);
-      targetLabel = heapBlock
-        ? `→ ${formatAddress(value.target)} ${heapBlock.active ? "" : "(freed)"}`
-        : `→ ${formatAddress(value.target)}`;
-    } else {
-      // Points to a stack variable
-      const targetEntry = allEntries.find(
-        (e) => e.address && formatAddress(e.address) === targetAddr && e.name !== name,
-      );
-      targetLabel = targetEntry ? `→ ${targetEntry.name}` : `→ ${targetAddr}`;
-    }
-  }
-
-  // Resolve pointer chain for pointer-to-pointer
-  const chain = isPtr ? resolveChain(name, allVars, allEntries, 4) : "";
+function StackFrameCard({ frame, allEntries, heap }: StackFrameCardProps) {
+  const allVars = { ...frame.parameters, ...frame.locals };
+  const varEntries = Object.entries(allVars).map(([name, value]) => ({
+    name,
+    value,
+    address: frame.addresses[name],
+  }));
 
   return (
     <div
-      className={`codevi-viz-stack-var rounded-md border px-3 py-2 font-mono text-xs transition-colors ${
-        isPtr
-          ? isNull
-            ? "border-fg-muted/30 bg-surface"
-            : "border-accent/40 bg-accent/5"
-          : "border-border bg-surface"
+      className={`rounded-md border ${
+        frame.isActive ? "border-accent/40 bg-accent/10" : "border-border bg-surface-raised"
       }`}
     >
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="font-medium text-fg">{name}</span>
-        <span className="text-[10px] text-fg-muted">{address}</span>
+      {/* Frame Header - Matches StackPanel */}
+      <div className="flex items-center gap-2 px-2.5 py-1.5">
+        <Layers size={13} className={frame.isActive ? "text-accent" : "text-fg-muted"} />
+        <span className="font-mono text-sm text-fg">
+          {frame.functionName}
+          {formatParameters(frame.parameters)}
+        </span>
+        {frame.isActive && (
+          <span className="ml-auto rounded-full bg-accent/20 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-accent">
+            active
+          </span>
+        )}
+        <span className="font-mono text-xs text-fg-muted">line {frame.line + 1}</span>
       </div>
-      <div className="mt-0.5 flex items-baseline gap-1.5">
-        <span className="text-fg-muted">{value.type}{isPtr ? " *" : ""}</span>
-        <span className="text-fg">{formatExecutionValue(value)}</span>
-      </div>
-      {isPtr && isNull && (
-        <div className="mt-1 text-[10px] text-fg-muted">NULL</div>
-      )}
-      {isPtr && targetLabel && (
-        <div className="mt-1 text-[10px] text-accent font-medium">{targetLabel}</div>
-      )}
-      {chain && (
-        <div className="mt-0.5 rounded bg-accent/10 px-1.5 py-0.5 text-[10px] text-accent">
-          {chain}
+
+      {/* Frame Variables - Matches StackPanel border-t list */}
+      {varEntries.length > 0 ? (
+        <div className="border-t border-border px-2.5 py-1.5 flex flex-col gap-1.5 font-mono text-xs">
+          {varEntries.map(({ name, value, address }) => {
+            const isPtr = value.kind === "pointer";
+            const isNull = isPtr && !value.target;
+            const targetAddr = isPtr && value.target ? formatAddress(value.target) : null;
+
+            let targetLabel = "";
+            if (isPtr && value.target) {
+              if (value.target.space === "heap") {
+                const heapBlock = heap.find((b) => b.address.id === value.target!.id);
+                targetLabel = heapBlock
+                  ? `→ ${formatAddress(value.target)}${heapBlock.active ? "" : " (freed)"}`
+                  : `→ ${formatAddress(value.target)}`;
+              } else {
+                const targetEntry = allEntries.find(
+                  (e) => e.address && formatAddress(e.address) === targetAddr && e.name !== name,
+                );
+                targetLabel = targetEntry ? `→ ${targetEntry.name}` : `→ ${targetAddr}`;
+              }
+            }
+
+            const chain = isPtr ? resolveChain(name, allVars, allEntries, 4) : "";
+
+            return (
+              <div key={name} className="flex flex-col gap-0.5">
+                <div className="flex items-center justify-between gap-3 text-xs">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="font-medium text-fg">{name}</span>
+                    {address && (
+                      <span className="text-[10px] text-fg-muted">{formatAddress(address)}</span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1.5 text-right shrink-0">
+                    <span className="text-fg-muted text-[11px]">{value.type}{isPtr ? " *" : ""}</span>
+                    {isPtr ? (
+                      isNull ? (
+                        <span className="text-fg-muted">NULL</span>
+                      ) : (
+                        <span className="text-accent font-medium">{targetLabel}</span>
+                      )
+                    ) : (
+                      <span className="text-fg">{formatExecutionValue(value)}</span>
+                    )}
+                  </div>
+                </div>
+                {chain && (
+                  <div className="rounded bg-accent/15 px-1.5 py-0.5 text-[10px] text-accent font-mono self-start">
+                    {chain}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="border-t border-border px-2.5 py-1 text-xs text-fg-muted italic">
+          No local variables
         </div>
       )}
     </div>
@@ -159,7 +200,7 @@ function StackVarCard({ name, value, address, allVars, allEntries, heap }: Stack
 
 interface HeapBlockCardProps {
   block: HeapBlock;
-  stackEntries: { name: string; value: ExecutionValue }[];
+  stackEntries: VizEntry[];
 }
 
 function HeapBlockCard({ block, stackEntries }: HeapBlockCardProps) {
@@ -176,18 +217,18 @@ function HeapBlockCard({ block, stackEntries }: HeapBlockCardProps) {
 
   return (
     <div
-      className={`codevi-viz-heap-block rounded-md border px-3 py-2 font-mono text-xs transition-colors ${
-        block.active
-          ? "border-active/40 bg-active/5"
-          : "border-danger/30 bg-danger/5"
+      className={`rounded-md border transition-colors ${
+        block.active ? "border-active/40 bg-active/10" : "border-danger/30 bg-danger/10"
       }`}
     >
-      <div className="flex items-center justify-between gap-2">
-        <span className={`font-semibold ${block.active ? "text-active" : "text-danger"}`}>
+      {/* Header - Matches StackPanel structure */}
+      <div className="flex items-center gap-2 px-2.5 py-1.5">
+        <MemoryStick size={13} className={block.active ? "text-active" : "text-danger"} />
+        <span className={`font-mono text-sm font-medium ${block.active ? "text-active" : "text-danger"}`}>
           {addrStr}
         </span>
         <span
-          className={`rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${
+          className={`ml-auto rounded-full px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${
             block.active
               ? "bg-active/20 text-active"
               : "bg-danger/20 text-danger"
@@ -195,25 +236,34 @@ function HeapBlockCard({ block, stackEntries }: HeapBlockCardProps) {
         >
           {block.active ? "active" : "freed"}
         </span>
+        <span className="font-mono text-xs text-fg-muted">{block.byteSize} bytes</span>
       </div>
 
-      <div className="mt-1 text-fg-muted">
-        {block.byteSize} bytes · {block.origin}
-        {block.slotCount > 1 && ` · ${block.slotCount} slots`}
-      </div>
-
-      {referencingPtrs.length > 0 && (
-        <div className="mt-1 text-accent text-[10px]">
-          ← {referencingPtrs.join(", ")}
+      {/* Body - Matches StackPanel border-t structure */}
+      <div className="border-t border-border px-2.5 py-1.5 flex flex-col gap-1 font-mono text-xs">
+        <div className="flex justify-between gap-3 text-fg-muted">
+          <span>origin</span>
+          <span>
+            {block.origin}
+            {block.slotCount > 1 ? ` · ${block.slotCount} slots` : ""}
+          </span>
         </div>
-      )}
 
-      <div className={`mt-1 ${block.active ? "text-fg" : "text-fg-muted/60"}`}>
-        {block.values.length === 1 ? (
-          <span>value: {formatExecutionValue(block.values[0])}</span>
-        ) : (
-          <span>values: [{block.values.map((v) => formatExecutionValue(v)).join(", ")}]</span>
+        {referencingPtrs.length > 0 && (
+          <div className="flex justify-between gap-3 text-fg-muted">
+            <span>pointer</span>
+            <span className="text-accent font-medium">← {referencingPtrs.join(", ")}</span>
+          </div>
         )}
+
+        <div className="flex justify-between gap-3">
+          <span className="text-fg-muted">value</span>
+          <span className={block.active ? "text-fg font-medium" : "text-fg-muted/60"}>
+            {block.values.length === 1
+              ? formatExecutionValue(block.values[0])
+              : `[${block.values.map((v) => formatExecutionValue(v)).join(", ")}]`}
+          </span>
+        </div>
       </div>
     </div>
   );
