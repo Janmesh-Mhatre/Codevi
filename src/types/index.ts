@@ -12,7 +12,12 @@
  * Phase 0 blueprint, section 11 — Scalability and Multi-Language Support). */
 export type SupportedLanguage = "c" | "cpp" | "java" | "python" | "javascript";
 
+/** @deprecated Use `ThemeId` from `../themes/themeTypes` instead. Kept
+ *  temporarily for any lingering references during migration. */
 export type ThemeMode = "light" | "dark";
+
+/** Re-export from the centralized theme system for convenience. */
+export type { ThemeId } from "../themes/themeTypes";
 
 /** High-level program state, driven for real starting Phase 3 (see
  * src/execution/). "preparing" covers validating the AST and setting up

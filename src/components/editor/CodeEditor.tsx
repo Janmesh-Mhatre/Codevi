@@ -17,6 +17,7 @@ import type { TextChange } from "../../parser/parserService";
 import EditorWorker from "monaco-editor/editor/editor.worker?worker";
 import { useEditorStore } from "../../state/editorStore";
 import { useUIStore } from "../../state/uiStore";
+import { monacoThemeName } from "../../themes/applyTheme";
 import { scope } from "../../utils/logger";
 
 const log = scope("editor");
@@ -32,51 +33,6 @@ self.MonacoEnvironment = {
   // same worker.
   getWorker: () => new EditorWorker(),
 };
-
-let themesDefined = false;
-
-/** Registers two Monaco themes that pick up the app's own design tokens,
- * so the editor reads as part of the same system instead of a bolted-on
- * default. Colors are duplicated from src/index.css because Monaco themes
- * take literal hex values, not CSS variables. */
-function defineEditorThemes() {
-  if (themesDefined) return;
-  monaco.editor.defineTheme("cv-dark", {
-    base: "vs-dark",
-    inherit: true,
-    rules: [
-      { token: "comment", foreground: "8a93a6", fontStyle: "italic" },
-      { token: "keyword", foreground: "4fa3d1" },
-      { token: "number", foreground: "e3a23c" },
-      { token: "string", foreground: "9fd18a" },
-    ],
-    colors: {
-      "editor.background": "#161b24",
-      "editor.lineHighlightBackground": "#1d2330",
-      "editorLineNumber.foreground": "#5c6577",
-      "editorLineNumber.activeForeground": "#e7eaf0",
-      "editorCursor.foreground": "#e3a23c",
-    },
-  });
-  monaco.editor.defineTheme("cv-light", {
-    base: "vs",
-    inherit: true,
-    rules: [
-      { token: "comment", foreground: "5c6577", fontStyle: "italic" },
-      { token: "keyword", foreground: "2e7cb8" },
-      { token: "number", foreground: "c9821f" },
-      { token: "string", foreground: "3f7d3f" },
-    ],
-    colors: {
-      "editor.background": "#ffffff",
-      "editor.lineHighlightBackground": "#f5f7fa",
-      "editorLineNumber.foreground": "#8a93a6",
-      "editorLineNumber.activeForeground": "#1b2230",
-      "editorCursor.foreground": "#c9821f",
-    },
-  });
-  themesDefined = true;
-}
 
 const MARKER_OWNER = "codevi-parser";
 
@@ -115,14 +71,12 @@ export function CodeEditor() {
     executionStatus === "preparing" || executionStatus === "running" || executionStatus === "paused" || executionStatus === "waiting-for-input";
 
   const handleMount: OnMount = useCallback(
-    (editorInstance, monacoInstance) => {
-      defineEditorThemes();
-      monacoInstance.editor.setTheme(theme === "dark" ? "cv-dark" : "cv-light");
+    (editorInstance) => {
       editorRef.current = editorInstance;
       decorationsRef.current = editorInstance.createDecorationsCollection([]);
       log.info("Monaco mounted");
     },
-    [theme],
+    [],
   );
 
   const handleChange: OnChange = useCallback(
@@ -182,6 +136,12 @@ export function CodeEditor() {
     editorRef.current?.revealLineInCenterIfOutsideViewport(currentStep.line + 1);
   }, [currentStep, executionStatus]);
 
+  // The Monaco theme name is derived from the ThemeId. applyTheme()
+  // already calls monaco.editor.defineTheme() and setTheme(), but the
+  // <Editor> component also needs the `theme` prop to stay in sync for
+  // initial render and re-renders.
+  const editorTheme = monacoThemeName(theme);
+
   return (
     <Editor
       height="100%"
@@ -189,8 +149,7 @@ export function CodeEditor() {
       value={code}
       onChange={handleChange}
       onMount={handleMount}
-      theme={theme === "dark" ? "cv-dark" : "cv-light"}
-      beforeMount={defineEditorThemes}
+      theme={editorTheme}
       options={{
         fontFamily: "'IBM Plex Mono', ui-monospace, monospace",
         fontSize: 14,

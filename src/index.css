@@ -5,8 +5,11 @@
 @import "@fontsource/ibm-plex-mono/400.css";
 @import "@fontsource/ibm-plex-mono/500.css";
 
-/* Dark mode is driven by a `.dark` class on <html>, toggled from uiStore
-   (see src/hooks/useTheme.ts), not by the OS media query. */
+/* Theme class is driven by applyTheme() in src/themes/applyTheme.ts,
+   which sets CSS custom properties directly on <html> and toggles
+   `.dark` for Tailwind's dark variant. The @theme block below provides
+   fallback defaults (Dark Modern) for the initial render before React
+   hydrates. */
 @custom-variant dark (&:where(.dark, .dark *));
 
 /*
@@ -15,25 +18,15 @@
   terminal readouts rather than a generic SaaS look. Two accents carry
   all meaning: blueprint blue for static structure, amber for whatever
   is currently active. Everything else stays quiet.
+
+  Note: These values are the Dark Modern defaults. applyTheme() overrides
+  them at runtime for any selected theme.
 */
 @theme {
   --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
 
-  /* Light mode (default) */
-  --color-canvas: #eef1f5;
-  --color-surface: #ffffff;
-  --color-surface-raised: #f5f7fa;
-  --color-border: #d7dce3;
-  --color-fg: #1b2230;
-  --color-fg-muted: #5c6577;
-  --color-accent: #2e7cb8;
-  --color-accent-fg: #ffffff;
-  --color-active: #c9821f;
-  --color-danger: #c4453f;
-}
-
-.dark {
+  /* Dark Modern (default) */
   --color-canvas: #0f1319;
   --color-surface: #161b24;
   --color-surface-raised: #1d2330;
@@ -47,9 +40,6 @@
 }
 
 :root {
-  color-scheme: light;
-}
-.dark {
   color-scheme: dark;
 }
 
@@ -108,6 +98,3 @@
   background-color: color-mix(in srgb, var(--color-active) 22%, transparent);
   border-left: 3px solid var(--color-active);
 }
-
-
-

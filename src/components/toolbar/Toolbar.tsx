@@ -8,12 +8,11 @@ import {
   StepBack,
   RotateCcw,
   Settings,
-  Sun,
-  Moon,
   Columns2,
 } from "lucide-react";
 import { useUIStore } from "../../state/uiStore";
 import { pauseExecution, resetExecution, runExecution, stepExecution, useExecutionStore } from "../../state/executionStore";
+import { ThemeDropdown } from "./ThemeDropdown";
 
 interface ToolbarButtonProps {
   label: string;
@@ -64,8 +63,6 @@ function Divider() {
  */
 export function Toolbar() {
   const showToast = useUIStore((state) => state.showToast);
-  const theme = useUIStore((state) => state.theme);
-  const toggleTheme = useUIStore((state) => state.toggleTheme);
   const isRightPanelVisible = useUIStore((state) => state.isRightPanelVisible);
   const toggleRightPanel = useUIStore((state) => state.toggleRightPanel);
   const status = useExecutionStore((state) => state.status);
@@ -103,11 +100,7 @@ export function Toolbar() {
         active={isRightPanelVisible}
       />
       <Divider />
-      <ToolbarButton
-        label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
-        icon={theme === "dark" ? Sun : Moon}
-        onClick={toggleTheme}
-      />
+      <ThemeDropdown />
       <ToolbarButton label="Settings" icon={Settings} onClick={notImplemented} />
     </div>
   );

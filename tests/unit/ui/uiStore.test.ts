@@ -1,9 +1,13 @@
 import { describe, expect, it, beforeEach } from "vitest";
 import { useUIStore } from "../../../src/state/uiStore";
+import type { ThemeId } from "../../../src/themes/themeTypes";
+import { THEME_IDS } from "../../../src/themes/themeTypes";
 
 describe("UIStore workspace layout & panel resizing", () => {
   beforeEach(() => {
     useUIStore.getState().resetLayout();
+    // Reset theme to default for each test
+    useUIStore.getState().setTheme("dark-modern");
   });
 
   it("initializes with sensible default panel dimensions and visibility", () => {
@@ -99,5 +103,53 @@ describe("UIStore workspace layout & panel resizing", () => {
     expect(state.consoleHeight).toBe(160);
     expect(state.isConsoleVisible).toBe(true);
     expect(state.isExplanationVisible).toBe(true);
+  });
+});
+
+describe("UIStore theme system", () => {
+  beforeEach(() => {
+    useUIStore.getState().setTheme("dark-modern");
+  });
+
+  it("defaults to dark-modern theme", () => {
+    expect(useUIStore.getState().theme).toBe("dark-modern");
+  });
+
+  it("allows setting any valid ThemeId", () => {
+    for (const id of THEME_IDS) {
+      useUIStore.getState().setTheme(id);
+      expect(useUIStore.getState().theme).toBe(id);
+    }
+  });
+
+  it("does not have a toggleTheme method", () => {
+    // The old binary toggle has been replaced by setTheme(themeId)
+    expect("toggleTheme" in useUIStore.getState()).toBe(false);
+  });
+
+  it("theme is included in persisted state", () => {
+    // The theme should be persisted via partialize
+    useUIStore.getState().setTheme("tokyo-night");
+    expect(useUIStore.getState().theme).toBe("tokyo-night");
+
+    // Changing theme does not affect layout state
+    expect(useUIStore.getState().rightPanelWidth).toBe(420);
+  });
+
+  it("setting theme does not reset layout state", () => {
+    useUIStore.getState().setRightPanelWidth(600);
+    useUIStore.getState().setConsoleVisible(false);
+
+    useUIStore.getState().setTheme("dracula");
+
+    expect(useUIStore.getState().rightPanelWidth).toBe(600);
+    expect(useUIStore.getState().isConsoleVisible).toBe(false);
+    expect(useUIStore.getState().theme).toBe("dracula");
+  });
+
+  it("resetLayout does not reset theme", () => {
+    useUIStore.getState().setTheme("nord");
+    useUIStore.getState().resetLayout();
+    expect(useUIStore.getState().theme).toBe("nord");
   });
 });

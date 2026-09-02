@@ -1,14 +1,10 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
-import type { ThemeMode } from "../types";
+import type { ThemeId } from "../themes/themeTypes";
+import { THEME_IDS } from "../themes/themeTypes";
 import { scope } from "../utils/logger";
 
 const log = scope("uiStore");
-
-function prefersDark(): boolean {
-  if (typeof window === "undefined" || !window.matchMedia) return false;
-  return window.matchMedia("(prefers-color-scheme: dark)").matches;
-}
 
 const safeStorage = {
   getItem: (name: string) => {
@@ -36,9 +32,8 @@ interface ToastState {
 }
 
 interface UIState {
-  theme: ThemeMode;
-  setTheme: (theme: ThemeMode) => void;
-  toggleTheme: () => void;
+  theme: ThemeId;
+  setTheme: (theme: ThemeId) => void;
 
   // Workspace layout (resizable panels & collapsible workspace)
   rightPanelWidth: number;
@@ -77,20 +72,28 @@ const DEFAULT_CONSOLE_HEIGHT = 160;
 
 let toastId = 0;
 
+/**
+ * Migrate legacy `"dark"` / `"light"` theme values from the old binary
+ * toggle to the new ThemeId system, and validate that the stored value
+ * is a valid ThemeId.
+ */
+function migrateTheme(raw: unknown): ThemeId {
+  if (raw === "dark") return "dark-modern";
+  if (raw === "light") return "light-modern";
+  if (typeof raw === "string" && (THEME_IDS as readonly string[]).includes(raw)) {
+    return raw as ThemeId;
+  }
+  return "dark-modern";
+}
+
 export const useUIStore = create<UIState>()(
   persist(
     (set) => ({
-      theme: prefersDark() ? "dark" : "light",
+      theme: "dark-modern" as ThemeId,
       setTheme: (theme) => {
         log.info("theme set", theme);
         set({ theme });
       },
-      toggleTheme: () =>
-        set((state) => {
-          const next = state.theme === "dark" ? "light" : "dark";
-          log.info("theme toggled", next);
-          return { theme: next };
-        }),
 
       rightPanelWidth: DEFAULT_RIGHT_PANEL_WIDTH,
       setRightPanelWidth: (width) => set({ rightPanelWidth: Math.max(260, Math.round(width)) }),
@@ -149,6 +152,16 @@ export const useUIStore = create<UIState>()(
         isConsoleVisible: state.isConsoleVisible,
         isExplanationVisible: state.isExplanationVisible,
       }),
+      // Migrate legacy "dark"/"light" values from old persistence
+      merge: (persisted, current) => {
+        const p = persisted as Record<string, unknown> | undefined;
+        if (!p) return current;
+        return {
+          ...current,
+          ...p,
+          theme: migrateTheme(p.theme),
+        };
+      },
     },
   ),
 );
