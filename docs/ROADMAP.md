@@ -10,19 +10,19 @@
 -   Native desktop (.exe) packaging is postponed until all phases are
     complete.
 
-## Planned Phases
+## Phases & Progress
 
-0.  Architecture & Planning
-1.  Project Foundation
-2.  Parser Integration
-3.  Execution Engine
-4.  Memory Visualization
-5.  Variable Tracking & Call Stack
-6.  Pointer Visualization
-7.  Data Structure Visualization
-8.  Algorithm Visualization
-9.  Explanation Engine
-10. Debugging Tools
-11. AI Integration (Optional)
-12. Multi-language Support
-13. Optimization & Final Release
+0.  [x] Architecture & Planning
+1.  [x] Project Foundation
+2.  [x] Parser Integration (Tree-sitter WASM, AST Viewer, diagnostics)
+3.  [x] Execution Engine (Generator-based C interpreter, step controls)
+4.  [x] Memory, Variables & Stack Visualization (inc. Phase 4.1 Basic C stdio)
+5.  [x] Pointers & Dynamic Memory (malloc/free, simulated address space, safety errors)
+6.  [x] Pointer Visualization (Interactive SVG graph, connectors, %p locations, arrays, themes)
+7.  [ ] Data Structure Visualization (Linked lists, binary trees, graphs)
+8.  [ ] Algorithm Visualization (Sorting, searching, recursion)
+9.  [ ] Explanation Engine
+10. [ ] Debugging Tools (Breakpoints, watch expressions)
+11. [ ] AI Integration (Optional)
+12. [ ] Multi-language Support
+13. [ ] Optimization & Final Release
