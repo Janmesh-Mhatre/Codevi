@@ -38,10 +38,30 @@ export interface CPointerValue {
   target: Address | null;
 }
 
-export type CValue = CScalarValue | CPointerValue;
+/** Phase 6: a fixed-length C array stored on the stack. The array
+ * itself isn't a first-class value that can be assigned/returned — it
+ * only exists inside Scope, and evaluating the array's identifier
+ * produces a pointer to its first element (array-to-pointer decay). */
+export interface CArrayValue {
+  kind: "array";
+  elementType: CType;
+  /** Base address — slot 0 of the array's contiguous storage. */
+  baseAddress: Address;
+  length: number;
+}
+
+export type CValue = CScalarValue | CPointerValue | CArrayValue;
 
 export function isPointer(value: CValue): value is CPointerValue {
   return value.kind === "pointer";
+}
+
+export function isArray(value: CValue): value is CArrayValue {
+  return value.kind === "array";
+}
+
+export function isScalar(value: CValue): value is CScalarValue {
+  return value.kind === "scalar";
 }
 
 export function scalar(type: CType, value: number): CScalarValue {
@@ -52,6 +72,10 @@ export function pointerValue(pointee: CType | CPointerType, target: Address | nu
   return { kind: "pointer", pointerType: { kind: "pointer", pointee }, target };
 }
 
+export function arrayValue(elementType: CType, baseAddress: Address, length: number): CArrayValue {
+  return { kind: "array", elementType, baseAddress, length };
+}
+
 export class CRuntimeError extends Error {
   constructor(message: string) {
     super(message);
@@ -60,7 +84,9 @@ export class CRuntimeError extends Error {
 }
 
 export function isTruthy(value: CValue): boolean {
-  return value.kind === "pointer" ? value.target !== null : value.value !== 0;
+  if (value.kind === "pointer") return value.target !== null;
+  if (value.kind === "array") return true; // arrays always decay to non-null pointers
+  return value.value !== 0;
 }
 
 export function cBool(condition: boolean): CScalarValue {

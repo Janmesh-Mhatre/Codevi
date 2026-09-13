@@ -60,6 +60,45 @@ describe("printf format string parsing and rendering", () => {
   it("throws when %s is given a non-string argument", () => {
     expect(() => renderPrintf("%s", [{ kind: "value", value: { kind: "scalar", type: "int", value: 1 } }])).toThrow(/string literal/);
   });
+
+  it("tokenizes %p and %ld correctly", () => {
+    expect(parseFormatString("%p %ld")).toEqual([
+      { kind: "specifier", specifier: "p" },
+      { kind: "text", text: " " },
+      { kind: "specifier", specifier: "ld" },
+    ]);
+  });
+
+  it("renders %p from a pointer argument", () => {
+    const output = renderPrintf("%p", [
+      { kind: "pointer", value: { kind: "pointer", pointerType: { kind: "pointer", pointee: "int" }, target: { space: "stack", id: 1, slot: 0 } } },
+    ]);
+    expect(output).toBe("S001");
+  });
+
+  it("renders %p as NULL for a null pointer target", () => {
+    const output = renderPrintf("%p", [
+      { kind: "pointer", value: { kind: "pointer", pointerType: { kind: "pointer", pointee: "int" }, target: null } },
+    ]);
+    expect(output).toBe("NULL");
+  });
+
+  it("renders %ld as an integer", () => {
+    const output = renderPrintf("%ld", [{ kind: "value", value: { kind: "scalar", type: "int", value: 42 } }]);
+    expect(output).toBe("42");
+  });
+
+  it("throws when %p is given a non-pointer argument", () => {
+    expect(() => renderPrintf("%p", [{ kind: "value", value: { kind: "scalar", type: "int", value: 10 } }])).toThrow(/requires a pointer-compatible argument/);
+  });
+
+  it("throws when numeric specifier %d is given a pointer argument", () => {
+    expect(() =>
+      renderPrintf("%d", [
+        { kind: "pointer", value: { kind: "pointer", pointerType: { kind: "pointer", pointee: "int" }, target: { space: "stack", id: 1, slot: 0 } } },
+      ]),
+    ).toThrow(/numeric specifiers/);
+  });
 });
 
 describe("scanf format parsing", () => {

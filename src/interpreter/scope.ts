@@ -1,6 +1,6 @@
 import type { Address } from "../memory/memory";
 import type { MemoryModel } from "../memory/memory";
-import type { CValue } from "./values";
+import type { CArrayValue, CValue } from "./values";
 import { CRuntimeError } from "./values";
 
 /**
@@ -20,6 +20,13 @@ import { CRuntimeError } from "./values";
  */
 export class Scope {
   private readonly bindings = new Map<string, Address>();
+  /** Phase 6: names that are arrays rather than scalars/pointers. The
+   * interpreter uses this to apply array-to-pointer decay when an array
+   * identifier appears in an expression. */
+  private readonly arrayNames = new Set<string>();
+  /** Phase 6: stores array metadata directly so lookups and snapshots
+   * resolve array values without allocating extraneous dummy stack cells. */
+  private readonly arrayValues = new Map<string, CArrayValue>();
   readonly memory: MemoryModel;
 
   /** Child scopes only need a parent — they inherit its MemoryModel
@@ -44,11 +51,38 @@ export class Scope {
     return address;
   }
 
+  /** Phase 6: declares a fixed-length stack array — registers its
+   * contiguous baseAddress in bindings and stores the CArrayValue directly. */
+  declareArray(name: string, arrayVal: CValue): Address {
+    if (this.bindings.has(name)) {
+      throw new CRuntimeError(`Redeclaration of "${name}" in the same scope`);
+    }
+    if (arrayVal.kind !== "array") {
+      throw new CRuntimeError(`declareArray called with non-array value for "${name}"`);
+    }
+    this.bindings.set(name, arrayVal.baseAddress);
+    this.arrayValues.set(name, arrayVal);
+    this.arrayNames.add(name);
+    return arrayVal.baseAddress;
+  }
+
+  /** Phase 6: returns true if `name` was declared as an array. Searches
+   * parent scopes, matching C's scoping rules. */
+  isArrayName(name: string): boolean {
+    return this.arrayNames.has(name) || (this.parent?.isArrayName(name) ?? false);
+  }
+
   lookupAddress(name: string): Address | undefined {
     return this.bindings.get(name) ?? this.parent?.lookupAddress(name);
   }
 
   lookup(name: string): CValue | undefined {
+    if (this.arrayValues.has(name)) {
+      return this.arrayValues.get(name);
+    }
+    if (this.parent?.isArrayName(name)) {
+      return this.parent.lookup(name);
+    }
     const address = this.lookupAddress(name);
     return address ? this.memory.read(address) : undefined;
   }
@@ -72,7 +106,11 @@ export class Scope {
   snapshot(): Record<string, CValue> {
     const result = this.parent?.snapshot() ?? {};
     for (const [name, address] of this.bindings) {
-      result[name] = this.memory.read(address);
+      if (this.arrayValues.has(name)) {
+        result[name] = this.arrayValues.get(name)!;
+      } else {
+        result[name] = this.memory.read(address);
+      }
     }
     return result;
   }

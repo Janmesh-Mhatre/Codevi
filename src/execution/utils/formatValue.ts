@@ -9,6 +9,10 @@ export function formatExecutionValue(value: ExecutionValue): string {
   if (value.kind === "pointer") {
     return value.target ? formatAddress(value.target) : "NULL";
   }
+  if (value.kind === "array") {
+    const vals = value.values.map((v) => formatExecutionValue(v)).join(", ");
+    return `{${vals}}`;
+  }
   if (value.type === "char") {
     const code = value.value;
     const printable = code >= 32 && code <= 126;

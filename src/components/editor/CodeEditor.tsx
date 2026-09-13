@@ -136,6 +136,34 @@ export function CodeEditor() {
     editorRef.current?.revealLineInCenterIfOutsideViewport(currentStep.line + 1);
   }, [currentStep, executionStatus]);
 
+  // Remeasure fonts when web fonts finish loading asynchronously.
+  // Monaco measures character widths on mount; if 'IBM Plex Mono' isn't
+  // loaded yet, Monaco measures fallback fonts, causing cumulative cursor drift.
+  useEffect(() => {
+    if (typeof document !== "undefined" && "fonts" in document) {
+      document.fonts.ready.then(() => {
+        monaco.editor.remeasureFonts();
+        editorRef.current?.layout();
+      });
+      const handleLoadingDone = () => {
+        monaco.editor.remeasureFonts();
+        editorRef.current?.layout();
+      };
+      document.fonts.addEventListener("loadingdone", handleLoadingDone);
+      return () => {
+        document.fonts.removeEventListener("loadingdone", handleLoadingDone);
+      };
+    }
+  }, []);
+
+  // Relayout on theme switch and panel resizing so measurements stay exact
+  const rightPanelWidth = useUIStore((state) => state.rightPanelWidth);
+  const isRightPanelVisible = useUIStore((state) => state.isRightPanelVisible);
+  useEffect(() => {
+    monaco.editor.remeasureFonts();
+    editorRef.current?.layout();
+  }, [theme, rightPanelWidth, isRightPanelVisible]);
+
   // The Monaco theme name is derived from the ThemeId. applyTheme()
   // already calls monaco.editor.defineTheme() and setTheme(), but the
   // <Editor> component also needs the `theme` prop to stay in sync for
@@ -153,14 +181,16 @@ export function CodeEditor() {
       options={{
         fontFamily: "'IBM Plex Mono', ui-monospace, monospace",
         fontSize: 14,
+        lineHeight: 21,
+        letterSpacing: 0,
+        fontLigatures: false,
         lineNumbers: "on",
         minimap: { enabled: false },
         automaticLayout: true,
         scrollBeyondLastLine: false,
         renderLineHighlight: "all",
         readOnly: isReadOnly,
-        // Execution (Phase 3) is a real tree-walking interpreter, not a
-        // simulation — see docs/PHASE_3_EXECUTION.md.
+        fixedOverflowWidgets: true,
       }}
     />
   );

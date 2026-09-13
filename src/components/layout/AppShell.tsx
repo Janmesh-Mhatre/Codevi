@@ -4,6 +4,7 @@ import { CodeEditor } from "../editor/CodeEditor";
 import { VisualizationPanel } from "../panels/VisualizationPanel";
 import { AstViewerPanel } from "../panels/AstViewerPanel";
 import { StackPanel } from "../panels/StackPanel";
+import { PointerViewPanel } from "../panels/PointerViewPanel";
 import { VariablePanel } from "../panels/VariablePanel";
 import { MemoryPanel } from "../panels/MemoryPanel";
 import { ExplanationPanel } from "../panels/ExplanationPanel";
@@ -18,6 +19,7 @@ const TOP_RIGHT_TABS = [
   { id: "ast", label: "AST" },
   { id: "stack", label: "Stack" },
   { id: "visualization", label: "Visualization" },
+  { id: "pointer-view", label: "Pointer View" },
 ] as const;
 
 /**
@@ -167,6 +169,7 @@ export function AppShell() {
                   {(activeTabId) => {
                     if (activeTabId === "ast") return <AstViewerPanel />;
                     if (activeTabId === "stack") return <StackPanel />;
+                    if (activeTabId === "pointer-view") return <PointerViewPanel />;
                     return <VisualizationPanel />;
                   }}
                 </Tabs>

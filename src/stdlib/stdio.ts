@@ -1,5 +1,6 @@
 import type { Node as SyntaxNode } from "web-tree-sitter";
-import { scalar, type CScalarValue, type CType } from "../interpreter/values";
+import { scalar, type CScalarValue, type CPointerValue, type CType } from "../interpreter/values";
+import { formatAddress } from "../memory/memory";
 
 /**
  * Everything format-string/format-specifier related for printf/scanf/
@@ -39,8 +40,8 @@ export function extractStringLiteralText(node: SyntaxNode): string {
   return result;
 }
 
-export type PrintfSpecifier = "d" | "i" | "u" | "f" | "c" | "s";
-const PRINTF_SPECIFIERS = new Set(["d", "i", "u", "f", "c", "s"]);
+export type PrintfSpecifier = "d" | "i" | "u" | "f" | "c" | "s" | "p" | "ld";
+const PRINTF_SPECIFIERS = new Set(["d", "i", "u", "f", "c", "s", "p"]);
 
 export type FormatToken = { kind: "text"; text: string } | { kind: "specifier"; specifier: PrintfSpecifier };
 
@@ -64,6 +65,15 @@ export function parseFormatString(text: string): FormatToken[] {
       i++;
       continue;
     }
+    if (next === "l" && text[i + 2] === "d") {
+      if (buffer) {
+        tokens.push({ kind: "text", text: buffer });
+        buffer = "";
+      }
+      tokens.push({ kind: "specifier", specifier: "ld" });
+      i += 2;
+      continue;
+    }
     if (next && PRINTF_SPECIFIERS.has(next)) {
       if (buffer) {
         tokens.push({ kind: "text", text: buffer });
@@ -73,19 +83,23 @@ export function parseFormatString(text: string): FormatToken[] {
       i++;
       continue;
     }
-    throw new Error(`Unsupported format specifier "%${next ?? ""}" — supported: %d %i %u %f %c %s %%`);
+    throw new Error(`Unsupported format specifier "%${next ?? ""}" — supported: %d %i %u %f %c %s %p %ld %%`);
   }
   if (buffer) tokens.push({ kind: "text", text: buffer });
   return tokens;
 }
 
-export type PrintfArgument = { kind: "value"; value: CScalarValue } | { kind: "string"; text: string };
+export type PrintfArgument =
+  | { kind: "value"; value: CScalarValue }
+  | { kind: "pointer"; value: CPointerValue }
+  | { kind: "string"; text: string };
 
 function formatPrintfValue(value: CScalarValue, specifier: PrintfSpecifier): string {
   switch (specifier) {
     case "d":
     case "i":
     case "u":
+    case "ld":
       return String(Math.trunc(value.value));
     case "f":
       return value.value.toFixed(6);
@@ -118,7 +132,15 @@ export function renderPrintf(formatText: string, args: PrintfArgument[]): string
         throw new Error('%s only supports a string literal written directly in the printf() call — Codevi has no string variable type yet');
       }
       output += arg.text;
+    } else if (token.specifier === "p") {
+      if (arg.kind !== "pointer") {
+        throw new Error('Unsupported format: %p requires a pointer-compatible argument');
+      }
+      output += arg.value.target ? formatAddress(arg.value.target) : "NULL";
     } else {
+      if (arg.kind === "pointer") {
+        throw new Error("printf()'s numeric specifiers (%d/%f/%c/...) don't support pointer arguments yet");
+      }
       if (arg.kind !== "value") {
         throw new Error(`"%${token.specifier}" expects a number, not a string literal`);
       }

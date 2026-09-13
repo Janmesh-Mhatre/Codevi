@@ -76,6 +76,14 @@ export interface HeapAllocation {
   origin: "malloc" | "calloc" | "realloc";
 }
 
+/** Phase 6: metadata for a stack-allocated array — the stack analog of
+ * HeapAllocation. Pointer arithmetic bounds-checks against slotCount
+ * the same way it does for heap blocks. */
+export interface StackArrayAllocation {
+  baseAddress: Address;
+  slotCount: number;
+}
+
 export type MemoryEvent =
   | { kind: "allocate"; address: Address; byteSize: number; origin: HeapAllocation["origin"] }
   | { kind: "deallocate"; address: Address }
@@ -98,6 +106,9 @@ const MAX_EVENT_LOG = 200;
 export class MemoryModel {
   private readonly cells = new Map<string, MemoryCell>();
   private readonly allocations = new Map<string, HeapAllocation>();
+  /** Phase 6: tracks stack arrays so pointer arithmetic can bounds-check
+   * them — keyed by base address key (slot 0). */
+  private readonly stackArrays = new Map<string, StackArrayAllocation>();
   private nextStackId = 1;
   private nextHeapId = 1;
   readonly events: MemoryEvent[] = [];
@@ -117,6 +128,41 @@ export class MemoryModel {
     const address: Address = { space: "stack", id: this.nextStackId++, slot: 0 };
     this.cells.set(this.key(address), { address, value: initialValue, label });
     return address;
+  }
+
+  /** Phase 6: allocates a contiguous array of stack slots sharing one
+   * base id — exactly the same slot model the heap uses, so pointer
+   * arithmetic works identically on both. */
+  allocateStackArray(label: string, slotCount: number, fill: CValue): Address {
+    const baseId = this.nextStackId++;
+    const baseAddress: Address = { space: "stack", id: baseId, slot: 0 };
+    this.stackArrays.set(this.key(baseAddress), { baseAddress, slotCount });
+    for (let i = 0; i < slotCount; i++) {
+      const slot: Address = { space: "stack", id: baseId, slot: i };
+      this.cells.set(this.key(slot), { address: slot, value: fill, label: `${label}[${i}]` });
+    }
+    return baseAddress;
+  }
+
+  /** Phase 6: returns the stack array allocation a given address belongs
+   * to (any slot resolves to the base), or undefined for non-array
+   * stack cells. */
+  getStackArray(address: Address): StackArrayAllocation | undefined {
+    if (address.space !== "stack") return undefined;
+    return this.stackArrays.get(this.key({ space: "stack", id: address.id, slot: 0 }));
+  }
+
+  /** Phase 6: reads all slot values of a stack array — mirrors
+   * slotValues() for heap allocations. */
+  stackArraySlotValues(baseAddress: Address): CValue[] {
+    const arr = this.getStackArray(baseAddress);
+    if (!arr) return [];
+    const values: CValue[] = [];
+    for (let i = 0; i < arr.slotCount; i++) {
+      const cell = this.cells.get(this.key({ space: "stack", id: baseAddress.id, slot: i }));
+      if (cell) values.push(cell.value);
+    }
+    return values;
   }
 
   // ---- Heap allocations -------------------------------------------------

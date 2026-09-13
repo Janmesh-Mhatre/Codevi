@@ -167,10 +167,10 @@ describe("additional interpreter coverage", () => {
     expect(outcome.error).toBeInstanceOf(InterpreterError);
   });
 
-  it("reports source position on unsupported constructs (arrays) instead of crashing", async () => {
-    // Pointers themselves are now supported as of Phase 5 — see
-    // tests/unit/pointers.test.ts. Arrays remain unimplemented, which is
-    // exactly what this test is checking the error path for.
+  it("supports basic array declarations (Phase 6) instead of crashing", async () => {
+    // As of Phase 6, arrays are supported — this test was originally
+    // checking the "unsupported" error path for arrays, but now verifies
+    // that a simple array declaration succeeds.
     const root = await parseC(`
       int main() {
           int arr[5];
@@ -178,7 +178,8 @@ describe("additional interpreter coverage", () => {
       }
     `);
     const outcome = run(root);
-    expect(outcome.error).toBeInstanceOf(InterpreterError);
+    expect(outcome.error).toBeUndefined();
+    expect(outcome.result).toEqual({ kind: "scalar", type: "int", value: 0 });
   });
 
   it("gives a specific message for unsupported library calls like strlen, not a generic failure", async () => {

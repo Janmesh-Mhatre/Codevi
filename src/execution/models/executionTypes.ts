@@ -10,7 +10,8 @@ export type ExecutionStatus = "idle" | "preparing" | "running" | "paused" | "wai
  * or null for NULL. See docs/PHASE_5_POINTERS.md. */
 export type ExecutionValue =
   | { kind: "scalar"; type: string; value: number }
-  | { kind: "pointer"; type: string; target: Address | null };
+  | { kind: "pointer"; type: string; target: Address | null }
+  | { kind: "array"; type: string; address: Address; length: number; values: ExecutionValue[] };
 
 /** Plain-data version of an interactive input request — see
  * docs/PHASE_4_1_STDIO.md. `specifier` reuses stdio.ts's ScanfSpecifier
@@ -73,6 +74,39 @@ export interface ExecutionStep {
    * visualization can show a block being freed rather than just
    * vanishing. */
   heap: HeapBlock[];
+  /** Phase 6: derived pointer relationship data for the Pointer View
+   * tab. Computed from the same runtime state as everything else — not
+   * maintained separately. */
+  pointerView: PointerViewData;
+}
+
+/** Phase 6: one pointer’s relationship to its target. */
+export interface PointerRelationship {
+  pointerName: string;
+  pointerAddress: Address | undefined;
+  targetAddress: Address | null;
+  /** Resolved variable name of the target, if the address matches a
+   * known stack variable. */
+  targetName: string | null;
+  targetRegion: "stack" | "heap" | "none";
+  status: "valid" | "null" | "freed" | "invalid";
+  /** What pointer’s target this pointer is. 0 = top-level pointer. */
+  chainDepth: number;
+}
+
+/** Phase 6: all pointer-view data for one execution step. */
+export interface PointerViewData {
+  relationships: PointerRelationship[];
+  stackVariables: PointerViewVariable[];
+  heapBlocks: HeapBlock[];
+}
+
+export interface PointerViewVariable {
+  name: string;
+  address: Address;
+  value: ExecutionValue;
+  isArray: boolean;
+  arrayLength?: number;
 }
 
 export interface ExecutionLogEntry {

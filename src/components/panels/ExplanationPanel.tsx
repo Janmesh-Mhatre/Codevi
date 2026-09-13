@@ -1,16 +1,24 @@
 import { MessageSquareText, Minus, Plus } from "lucide-react";
 import { useUIStore } from "../../state/uiStore";
+import { useExecutionStore } from "../../state/executionStore";
 
 /**
  * One line of plain-language narration for whatever just executed.
- * Reads from the Explanation Layer's history starting in Phase 10 — until
- * then this always shows the same quiet placeholder line.
+ * Phase 6 wires this to show the live step description from the
+ * interpreter — previous phases showed a static placeholder.
  *
  * Can be independently hidden/shown via the toggle button in the header.
  */
 export function ExplanationPanel() {
   const isExplanationVisible = useUIStore((state) => state.isExplanationVisible);
   const toggleExplanation = useUIStore((state) => state.toggleExplanation);
+  const description = useExecutionStore((state) => state.currentStep?.description);
+  const status = useExecutionStore((state) => state.status);
+
+  const hasLiveDescription = description && status !== "idle";
+  const displayText = hasLiveDescription
+    ? description
+    : "Explanation will appear here as you step through your program.";
 
   if (!isExplanationVisible) {
     return (
@@ -33,9 +41,9 @@ export function ExplanationPanel() {
   return (
     <div className="flex shrink-0 items-center justify-between border-t border-border bg-surface px-3 py-1.5">
       <div className="flex items-center gap-2 min-w-0">
-        <MessageSquareText size={14} className="shrink-0 text-fg-muted" />
-        <p className="truncate text-sm text-fg-muted">
-          Explanation will appear here as you step through your program.
+        <MessageSquareText size={14} className={`shrink-0 ${hasLiveDescription ? "text-accent" : "text-fg-muted"}`} />
+        <p className={`truncate text-sm ${hasLiveDescription ? "text-fg" : "text-fg-muted"}`}>
+          {displayText}
         </p>
       </div>
       <button
