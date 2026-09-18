@@ -91,8 +91,8 @@ export function VariablePanel() {
                           ({rel.targetName})
                         </span>
                       )}
-                      {/* Variable location */}
-                      {ownAddress && !isArr && (
+                      {/* Variable / Array location */}
+                      {ownAddress && (
                         <span
                           className="ml-2 text-[10px] text-fg-muted/75 font-mono"
                           title={`Simulated location: ${formatAddress(ownAddress)}`}
@@ -101,18 +101,31 @@ export function VariablePanel() {
                         </span>
                       )}
                       {/* Array elements inline */}
-                      {isArr && value.kind === "array" && value.values.length > 0 && (
-                        <div className="mt-0.5 flex gap-0.5 flex-wrap">
-                          {value.values.map((elem, i) => (
-                            <span
-                              key={i}
-                              className="inline-flex items-center rounded bg-surface-raised px-1 py-0.5 text-[10px] text-fg-muted"
-                            >
-                              [{i}]={formatExecutionValue(elem)}
-                            </span>
-                          ))}
-                        </div>
-                      )}
+                      {isArr && value.kind === "array" && value.values.length > 0 && (() => {
+                        const is2D = Boolean(value.dimensions && value.dimensions.length === 2);
+                        const cols = is2D ? value.dimensions![1] : 1;
+
+                        return (
+                          <div className="mt-0.5 flex gap-1 flex-wrap">
+                            {value.values.map((elem, i) => {
+                              const r = is2D ? Math.floor(i / cols) : 0;
+                              const c = is2D ? i % cols : i;
+                              const coord = is2D ? `[${r}][${c}]` : `[${i}]`;
+                              const slotAddr = ownAddress ? formatAddress({ ...ownAddress, slot: i }) : undefined;
+
+                              return (
+                                <span
+                                  key={i}
+                                  className="inline-flex items-center rounded bg-surface-raised px-1.5 py-0.5 text-[10px] text-fg-muted font-mono"
+                                  title={slotAddr ? `Slot address: ${slotAddr}` : undefined}
+                                >
+                                  {coord} = {formatExecutionValue(elem)}
+                                </span>
+                              );
+                            })}
+                          </div>
+                        );
+                      })()}
                     </td>
                     <td className="px-2 py-1">
                       {isPtr && rel ? (

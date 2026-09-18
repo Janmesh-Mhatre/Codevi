@@ -105,6 +105,11 @@ export interface InterpreterStep {
    * conversion — the public ExecutionStep only ever holds plain heap
    * data, not this class instance. */
   memory: MemoryModel;
+  /** Phase 6.1: memory read/write/dereference events produced during
+   * this specific step — captured via MemoryModel.getStepAccesses()
+   * at makeStep time. Used by ExecutionEngine to populate
+   * ExecutionStep.stepAccesses for the visualization layer. */
+  stepAccesses: import("../memory/memory").MemoryEvent[];
 }
 
 /** Thrown for anything the interpreter genuinely cannot make sense of —

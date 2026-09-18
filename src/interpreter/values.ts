@@ -36,6 +36,8 @@ export interface CPointerValue {
   /** null = this pointer is NULL. Never a raw number — always a real
    * Address into the current run's MemoryModel, or null. */
   target: Address | null;
+  /** Multi-dimensional array dimensions when pointer represents decayed array or slice */
+  dimensions?: number[];
 }
 
 /** Phase 6: a fixed-length C array stored on the stack. The array
@@ -48,6 +50,8 @@ export interface CArrayValue {
   /** Base address — slot 0 of the array's contiguous storage. */
   baseAddress: Address;
   length: number;
+  /** Multi-dimensional array dimensions (e.g. [2, 3] for int matrix[2][3]) */
+  dimensions?: number[];
 }
 
 export type CValue = CScalarValue | CPointerValue | CArrayValue;
@@ -68,12 +72,12 @@ export function scalar(type: CType, value: number): CScalarValue {
   return { kind: "scalar", type, value };
 }
 
-export function pointerValue(pointee: CType | CPointerType, target: Address | null): CPointerValue {
-  return { kind: "pointer", pointerType: { kind: "pointer", pointee }, target };
+export function pointerValue(pointee: CType | CPointerType, target: Address | null, dimensions?: number[]): CPointerValue {
+  return { kind: "pointer", pointerType: { kind: "pointer", pointee }, target, dimensions };
 }
 
-export function arrayValue(elementType: CType, baseAddress: Address, length: number): CArrayValue {
-  return { kind: "array", elementType, baseAddress, length };
+export function arrayValue(elementType: CType, baseAddress: Address, length: number, dimensions?: number[]): CArrayValue {
+  return { kind: "array", elementType, baseAddress, length, dimensions };
 }
 
 export class CRuntimeError extends Error {

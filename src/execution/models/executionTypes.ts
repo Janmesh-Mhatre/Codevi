@@ -11,7 +11,20 @@ export type ExecutionStatus = "idle" | "preparing" | "running" | "paused" | "wai
 export type ExecutionValue =
   | { kind: "scalar"; type: string; value: number }
   | { kind: "pointer"; type: string; target: Address | null }
-  | { kind: "array"; type: string; address: Address; length: number; values: ExecutionValue[] };
+  | { kind: "array"; type: string; address: Address; length: number; values: ExecutionValue[]; dimensions?: number[] };
+
+/** Phase 6.1: one resolved memory access from a single execution step.
+ * Produced by ExecutionEngine.toExecutionStep() from the raw MemoryEvent
+ * slice captured by the interpreter. */
+export interface StepMemoryAccess {
+  kind: "read" | "write";
+  address: Address;
+  /** Resolved variable name if the address belongs to a known stack
+   * variable/array or heap block. */
+  variableName?: string;
+  /** Slot index within the owning array/block, if applicable. */
+  slotIndex?: number;
+}
 
 /** Plain-data version of an interactive input request — see
  * docs/PHASE_4_1_STDIO.md. `specifier` reuses stdio.ts's ScanfSpecifier
@@ -78,6 +91,9 @@ export interface ExecutionStep {
    * tab. Computed from the same runtime state as everything else — not
    * maintained separately. */
   pointerView: PointerViewData;
+  /** Phase 6.1: resolved per-step memory accesses (reads & writes)
+   * for the visualization layer's slot highlighting and access log. */
+  stepAccesses: StepMemoryAccess[];
 }
 
 /** Phase 6: one pointer’s relationship to its target. */

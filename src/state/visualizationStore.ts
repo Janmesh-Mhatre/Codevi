@@ -1,34 +1,50 @@
 import { create } from "zustand";
+import type { StructureKind } from "../visualization/models/structureTypes";
 
-/** A minimal, library-agnostic node/edge shape. Phase 4 will likely widen
- * this once React Flow's own node/edge types are wired in — this is
- * deliberately loose rather than importing React Flow's types a phase
- * early. */
-interface VisualizationNode {
+export interface VisualizationNode {
   id: string;
   kind: "stack-frame" | "heap-block" | "global" | "array" | "list-node" | "tree-node";
   label: string;
 }
 
-interface VisualizationEdge {
+export interface VisualizationEdge {
   id: string;
   source: string;
   target: string;
   kind: "pointer" | "next" | "child";
 }
 
-interface VisualizationState {
+export type StructureFilterType = "all" | StructureKind;
+
+export interface VisualizationState {
   nodes: VisualizationNode[];
   edges: VisualizationEdge[];
+  selectedNodeId: string | null;
+  selectedSlotIndex: number | null;
+  structureFilter: StructureFilterType;
+  setSelectedNode: (id: string | null, slotIndex?: number | null) => void;
+  setStructureFilter: (filter: StructureFilterType) => void;
+  resetVisualization: () => void;
 }
 
 /**
- * Placeholder store — intentionally inert in Phase 1.
- *
- * The Visualization Panel currently ignores this and renders its
- * "coming soon" state regardless of contents. Populated starting Phase 4.
+ * Shared state for data structure and memory visualization.
  */
-export const useVisualizationStore = create<VisualizationState>()(() => ({
+export const useVisualizationStore = create<VisualizationState>()((set) => ({
   nodes: [],
   edges: [],
+  selectedNodeId: null,
+  selectedSlotIndex: null,
+  structureFilter: "all",
+  setSelectedNode: (id, slotIndex = null) =>
+    set({ selectedNodeId: id, selectedSlotIndex: slotIndex }),
+  setStructureFilter: (filter) => set({ structureFilter: filter }),
+  resetVisualization: () =>
+    set({
+      nodes: [],
+      edges: [],
+      selectedNodeId: null,
+      selectedSlotIndex: null,
+      structureFilter: "all",
+    }),
 }));

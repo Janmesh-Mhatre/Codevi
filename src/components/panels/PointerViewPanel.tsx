@@ -3,6 +3,7 @@ import { Crosshair, MousePointerClick } from "lucide-react";
 import { useExecutionStore } from "../../state/executionStore";
 import { formatAddress } from "../../memory/memory";
 import { formatExecutionValue } from "../../execution/utils/formatValue";
+import { routeBezier, routeOutwardLoop } from "../../visualization/connectors/connectorRouting";
 import type { PointerRelationship, PointerViewVariable, HeapBlock, ExecutionValue } from "../../execution/models/executionTypes";
 
 /** Layout constants */
@@ -390,22 +391,10 @@ export function PointerViewPanel() {
             let pathD: string;
             if (a.kind === "stack-to-stack") {
               const idx = a.stackIndex ?? 0;
-              const dy = Math.abs(a.y2 - a.y1);
-              // Tiered horizontal loop offset in the gap between STACK and HEAP
-              const outwardOffset = 45 + idx * 30 + Math.min(50, dy * 0.2);
-              if (dy < 4) {
-                // Self-loop: exit top-right, loop, enter bottom-right
-                const r = outwardOffset * 0.6;
-                pathD = `M ${a.x1} ${a.y1 - 6} C ${a.x1 + r} ${a.y1 - 25}, ${a.x2 + r} ${a.y2 + 25}, ${a.x2} ${a.y2 + 6}`;
-              } else {
-                // Outward curved loop: exits rightward from pointer card, loops in gap, approaches target card from right
-                pathD = `M ${a.x1} ${a.y1} C ${a.x1 + outwardOffset} ${a.y1}, ${a.x2 + outwardOffset} ${a.y2}, ${a.x2} ${a.y2}`;
-              }
+              pathD = routeOutwardLoop(a.x1, a.y1, a.x2, a.y2, idx);
             } else {
-              // Existing stack-to-heap and null routing - PRESERVED EXACTLY
-              const dx = a.x2 - a.x1;
-              const cpOffset = Math.max(40, Math.abs(dx) * 0.4);
-              pathD = `M ${a.x1} ${a.y1} C ${a.x1 + cpOffset} ${a.y1}, ${a.x2 - cpOffset} ${a.y2}, ${a.x2} ${a.y2}`;
+              // Existing stack-to-heap and null routing - PRESERVED EXACTLY via centralized routeBezier
+              pathD = routeBezier(a.x1, a.y1, a.x2, a.y2);
             }
 
             return (

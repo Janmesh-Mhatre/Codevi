@@ -59,14 +59,23 @@ export function isReady(): boolean {
 /** Walks inserted text from a start point to find where it ends, the
  * same way every Tree-sitter editor integration does it: no newlines
  * means the column just advances; each newline resets the column and
- * advances the row. */
-function advancePosition(start: Point, insertedText: string): Point {
-  const lastNewline = insertedText.lastIndexOf("\n");
+ * advances the row.
+ *
+ * Phase 2.1 fix: normalises `\r\n` (Windows) and lone `\r` (old Mac)
+ * line endings to `\n` before computing the new position. Without this,
+ * a `\r\n` pair would be counted as a single `\n` by `lastIndexOf`
+ * but its extra byte would throw off the residual-column calculation,
+ * causing coordinate drift on incremental edits in CRLF files. */
+/** @internal Exported for unit testing only. */
+export function advancePosition(start: Point, insertedText: string): Point {
+  // Normalise line endings: \r\n → \n, lone \r → \n
+  const normalised = insertedText.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const lastNewline = normalised.lastIndexOf("\n");
   if (lastNewline === -1) {
-    return { row: start.row, column: start.column + insertedText.length };
+    return { row: start.row, column: start.column + normalised.length };
   }
-  const newlineCount = insertedText.split("\n").length - 1;
-  return { row: start.row + newlineCount, column: insertedText.length - lastNewline - 1 };
+  const newlineCount = normalised.split("\n").length - 1;
+  return { row: start.row + newlineCount, column: normalised.length - lastNewline - 1 };
 }
 
 /**

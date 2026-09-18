@@ -4,6 +4,19 @@ import type { AstNode } from "../../parser/astTypes";
 
 const DEFAULT_EXPANDED_DEPTH = 2;
 
+/** Makes control characters visible in the AST viewer — without this,
+ * a `\n` inside a string_literal leaf node would be swallowed by HTML
+ * rendering, making the viewer show `"hello world"` instead of
+ * `"hello\nworld"`. Only applied to short leaf-text snippets. */
+export function formatNodeText(raw: string): string {
+  return raw
+    .replace(/\\/g, "\\\\")
+    .replace(/\n/g, "\\n")
+    .replace(/\r/g, "\\r")
+    .replace(/\t/g, "\\t")
+    .replace(/\0/g, "\\0");
+}
+
 interface AstTreeNodeProps {
   node: AstNode;
   depth: number;
@@ -37,7 +50,7 @@ export function AstTreeNode({ node, depth }: AstTreeNodeProps) {
         <span className="min-w-0 break-words font-mono">
           {node.fieldName && <span className="text-fg-muted">{node.fieldName}: </span>}
           <span className={isProblem ? "font-semibold" : ""}>{node.type}</span>
-          {node.text !== undefined && <span className="text-fg-muted"> “{node.text}”</span>}
+          {node.text !== undefined && <span className="text-fg-muted"> "{formatNodeText(node.text)}"</span>}
         </span>
 
         <span className="ml-auto shrink-0 whitespace-nowrap pl-2 font-mono text-xs text-fg-muted">

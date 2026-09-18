@@ -26,7 +26,9 @@ export function convertToAstNode(node: SyntaxNode, fieldName: string | null = nu
     isMissing: node.isMissing,
     startPosition: { row: node.startPosition.row, column: node.startPosition.column },
     endPosition: { row: node.endPosition.row, column: node.endPosition.column },
-    text: namedChildren.length === 0 ? node.text.slice(0, MAX_LEAF_TEXT_LENGTH) : undefined,
+    text: (namedChildren.length === 0 || node.isError || node.isMissing)
+      ? node.text.slice(0, MAX_LEAF_TEXT_LENGTH)
+      : undefined,
     children: namedChildren.map((child, index) => convertToAstNode(child, node.fieldNameForNamedChild(index))),
   };
 }
@@ -37,6 +39,14 @@ export function convertToAstNode(node: SyntaxNode, fieldName: string | null = nu
  * MISSING nodes (tokens the parser inferred were left out, e.g. a `;`).
  * Iterative on purpose — student code is small, but there's no reason
  * to risk a deep recursion for a tree walk this mechanical.
+ *
+ * Phase 2.1 fix: when an ERROR node is found, its children are *not*
+ * pushed onto the traversal stack. Tree-sitter often nests ERROR nodes
+ * inside other ERROR nodes during recovery, which previously produced
+ * redundant diagnostics stacked on the same (or overlapping) source
+ * range. Emitting only the outermost ERROR keeps diagnostics clean.
+ * MISSING nodes inside an ERROR are still implicitly covered by the
+ * parent ERROR's message.
  */
 export function collectDiagnostics(tree: Tree): SyntaxDiagnostic[] {
   const diagnostics: SyntaxDiagnostic[] = [];
@@ -61,6 +71,8 @@ export function collectDiagnostics(tree: Tree): SyntaxDiagnostic[] {
         startPosition: { row: node.startPosition.row, column: node.startPosition.column },
         endPosition: { row: node.endPosition.row, column: node.endPosition.column },
       });
+      // Skip children of ERROR nodes to avoid duplicate diagnostics.
+      continue;
     }
 
     for (let i = 0; i < node.childCount; i++) {

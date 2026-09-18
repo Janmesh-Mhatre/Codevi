@@ -5,6 +5,7 @@ import { VisualizationPanel } from "../panels/VisualizationPanel";
 import { AstViewerPanel } from "../panels/AstViewerPanel";
 import { StackPanel } from "../panels/StackPanel";
 import { PointerViewPanel } from "../panels/PointerViewPanel";
+import { VariableArrayViewPanel } from "../panels/VariableArrayViewPanel";
 import { VariablePanel } from "../panels/VariablePanel";
 import { MemoryPanel } from "../panels/MemoryPanel";
 import { ExplanationPanel } from "../panels/ExplanationPanel";
@@ -19,6 +20,7 @@ const TOP_RIGHT_TABS = [
   { id: "ast", label: "AST" },
   { id: "stack", label: "Stack" },
   { id: "visualization", label: "Visualization" },
+  { id: "variable-array-view", label: "Variable & Array View" },
   { id: "pointer-view", label: "Pointer View" },
 ] as const;
 
@@ -169,6 +171,7 @@ export function AppShell() {
                   {(activeTabId) => {
                     if (activeTabId === "ast") return <AstViewerPanel />;
                     if (activeTabId === "stack") return <StackPanel />;
+                    if (activeTabId === "variable-array-view") return <VariableArrayViewPanel />;
                     if (activeTabId === "pointer-view") return <PointerViewPanel />;
                     return <VisualizationPanel />;
                   }}

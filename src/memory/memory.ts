@@ -82,6 +82,7 @@ export interface HeapAllocation {
 export interface StackArrayAllocation {
   baseAddress: Address;
   slotCount: number;
+  dimensions?: number[];
 }
 
 export type MemoryEvent =
@@ -112,9 +113,21 @@ export class MemoryModel {
   private nextStackId = 1;
   private nextHeapId = 1;
   readonly events: MemoryEvent[] = [];
+  /** Phase 6.1: index into `events` at the start of the current
+   * interpreter step — lets getStepAccesses() return only the events
+   * produced during this step rather than the entire run log. */
+  private stepStartIndex = 0;
 
   private key(address: Address): string {
     return `${address.space}:${address.id}:${address.slot}`;
+  }
+
+  /** Phase 6.1: public read-only accessor for a single cell. Used by
+   * ExecutionEngine to resolve a MemoryEvent address into a variable
+   * name and slot index for the visualization layer. Returns undefined
+   * if the address has no cell (e.g. freed heap). */
+  getCell(address: Address): MemoryCell | undefined {
+    return this.cells.get(this.key(address));
   }
 
   private recordEvent(event: MemoryEvent): void {
@@ -133,13 +146,20 @@ export class MemoryModel {
   /** Phase 6: allocates a contiguous array of stack slots sharing one
    * base id — exactly the same slot model the heap uses, so pointer
    * arithmetic works identically on both. */
-  allocateStackArray(label: string, slotCount: number, fill: CValue): Address {
+  allocateStackArray(label: string, slotCount: number, fill: CValue, dimensions?: number[]): Address {
     const baseId = this.nextStackId++;
     const baseAddress: Address = { space: "stack", id: baseId, slot: 0 };
-    this.stackArrays.set(this.key(baseAddress), { baseAddress, slotCount });
+    this.stackArrays.set(this.key(baseAddress), { baseAddress, slotCount, dimensions });
     for (let i = 0; i < slotCount; i++) {
       const slot: Address = { space: "stack", id: baseId, slot: i };
-      this.cells.set(this.key(slot), { address: slot, value: fill, label: `${label}[${i}]` });
+      let cellLabel = `${label}[${i}]`;
+      if (dimensions && dimensions.length === 2) {
+        const cols = dimensions[1];
+        const r = Math.floor(i / cols);
+        const c = i % cols;
+        cellLabel = `${label}[${r}][${c}]`;
+      }
+      this.cells.set(this.key(slot), { address: slot, value: fill, label: cellLabel });
     }
     return baseAddress;
   }
@@ -241,6 +261,19 @@ export class MemoryModel {
 
   recordDereference(address: Address): void {
     this.recordEvent({ kind: "dereference", address });
+  }
+
+  /** Phase 6.1: marks the beginning of a new interpreter step so that
+   * getStepAccesses() can return only the events from this step. */
+  markStepStart(): void {
+    this.stepStartIndex = this.events.length;
+  }
+
+  /** Phase 6.1: returns read/write/dereference events recorded since
+   * the last markStepStart() call — i.e. the events from the current
+   * interpreter step only. */
+  getStepAccesses(): MemoryEvent[] {
+    return this.events.slice(this.stepStartIndex);
   }
 
   /** Every active heap allocation, for the Visualization tab's heap

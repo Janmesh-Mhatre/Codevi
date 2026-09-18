@@ -9,6 +9,7 @@ import {
   comparePointers,
   defaultPointerValue,
   defaultValueForType,
+  formatPointerType,
   isArray,
   isPointer,
   isScalar,
@@ -94,6 +95,7 @@ interface ResolvedDeclarator {
   name: string;
   type: CType | CPointerType;
   arraySize?: number;
+  dimensions?: number[];
 }
 
 function resolveDeclarator(node: SyntaxNode, baseType: CType): ResolvedDeclarator | null {
@@ -105,20 +107,33 @@ function resolveDeclarator(node: SyntaxNode, baseType: CType): ResolvedDeclarato
     if (!inner) return null;
     const resolved = resolveDeclarator(inner, baseType);
     if (!resolved) return null;
-    return { name: resolved.name, type: { kind: "pointer", pointee: resolved.type } };
+    return { ...resolved, type: { kind: "pointer", pointee: resolved.type } };
   }
-  // Phase 6: array declarators — int arr[3];
+  // Phase 6: array declarators — int arr[3]; int arr[2][3];
   if (node.type === "array_declarator") {
     const inner = node.childForFieldName("declarator");
     const sizeNode = node.childForFieldName("size");
     if (!inner) return null;
     const resolved = resolveDeclarator(inner, baseType);
     if (!resolved) return null;
-    let arraySize = 0;
+    let size = 0;
     if (sizeNode && sizeNode.type === "number_literal") {
-      arraySize = parseInt(sizeNode.text, 10);
+      size = parseInt(sizeNode.text, 10);
     }
-    return { name: resolved.name, type: baseType, arraySize: arraySize > 0 ? arraySize : undefined };
+    const dimensions = resolved.dimensions
+      ? [...resolved.dimensions, size]
+      : resolved.arraySize !== undefined
+        ? [resolved.arraySize, size]
+        : size > 0
+          ? [size]
+          : undefined;
+    const totalSlots = dimensions ? dimensions.reduce((acc, d) => acc * (d > 0 ? d : 1), 1) : 0;
+    return {
+      name: resolved.name,
+      type: resolved.type,
+      arraySize: totalSlots > 0 ? totalSlots : undefined,
+      dimensions,
+    };
   }
   return null;
 }
@@ -131,7 +146,12 @@ function formatValue(value: CValue): string {
   if (value.kind === "pointer") {
     return value.target ? formatAddress(value.target) : "NULL";
   }
-  if (value.kind === "array") return `${value.elementType}[${value.length}]`;
+  if (value.kind === "array") {
+    if (value.dimensions && value.dimensions.length > 1) {
+      return `${value.elementType}${value.dimensions.map((d) => `[${d}]`).join("")}`;
+    }
+    return `${value.elementType}[${value.length}]`;
+  }
   if (value.type === "char") return `'${String.fromCharCode(value.value)}'`;
   return String(value.value);
 }
@@ -188,6 +208,10 @@ function makeStep(
   }
   const stack = callStack.map((frame, index) => buildFrameSnapshot(frame, index + 1));
   const topSnapshot = stack[stack.length - 1];
+  /** Phase 6.1: capture step-scoped memory accesses before resetting
+   * the step boundary for the next statement. */
+  const stepAccesses = scope.memory.getStepAccesses();
+  scope.memory.markStepStart();
   return {
     node,
     kind,
@@ -197,6 +221,7 @@ function makeStep(
     variables: topSnapshot ? { ...topSnapshot.parameters, ...topSnapshot.locals } : {},
     callStack: stack,
     memory: scope.memory,
+    stepAccesses,
     ...extra,
   };
 }
@@ -385,8 +410,20 @@ function* evaluateSizeof(node: SyntaxNode, scope: Scope, functions: Map<string, 
   const valueNode = node.childForFieldName("value");
   if (!valueNode) throw new InterpreterError("sizeof requires a type or expression", node);
   const inner = valueNode.type === "parenthesized_expression" ? (namedChildren(valueNode)[0] ?? valueNode) : valueNode;
+  if (inner.type === "identifier") {
+    const rawVal = scope.lookup(inner.text);
+    if (rawVal && rawVal.kind === "array") {
+      return scalar("int", sizeOfType(rawVal.elementType) * rawVal.length);
+    }
+  }
   const evaluated = yield* evaluate(inner, scope, functions, callStack);
-  if (evaluated.kind === "pointer") return scalar("int", sizeOfType("int")); // pointer size, simulated
+  if (evaluated.kind === "pointer") {
+    if (evaluated.dimensions && evaluated.dimensions.length > 0) {
+      const totalUnits = evaluated.dimensions.reduce((a, b) => a * b, 1);
+      return scalar("int", sizeOfType("int") * totalUnits);
+    }
+    return scalar("int", sizeOfType("int")); // pointer size, simulated
+  }
   if (evaluated.kind === "array") return scalar("int", sizeOfType(evaluated.elementType) * evaluated.length);
   return scalar("int", sizeOfType(evaluated.type));
 }
@@ -510,29 +547,51 @@ function dereference(pointer: CPointerValue, scope: Scope, node: SyntaxNode): CV
   if (pointer.target.space === "heap" && !scope.memory.isActiveHeapBlock(pointer.target)) {
     throw new InterpreterError(`Use after free: ${formatAddress(pointer.target)} was already freed`, node);
   }
+  // Phase 6.2: if the pointer points to a multidimensional array (e.g. *matrix where matrix is 2D),
+  // dereferencing it produces a pointer to the subarray with reduced dimensions (a row slice).
+  if (pointer.dimensions && pointer.dimensions.length > 1) {
+    scope.memory.recordDereference(pointer.target);
+    return {
+      ...pointer,
+      dimensions: pointer.dimensions.slice(1),
+    };
+  }
   scope.memory.recordDereference(pointer.target);
   return scope.memory.read(pointer.target);
 }
 
-/** Pointer arithmetic (`ptr + n`, `ptr++`) is only meaningful across a
- * multi-element heap allocation — Codevi has no arrays, so a pointer to
- * a single stack variable has nowhere else to "move" to. Bounds-checked
- * against the allocation's real slot count, turning a buffer overrun
- * into a clear error instead of reading/writing unrelated memory. */
+function pointerStride(dimensions?: number[]): number {
+  if (!dimensions || dimensions.length <= 1) return 1;
+  return dimensions.slice(1).reduce((acc, d) => acc * (d > 0 ? d : 1), 1);
+}
+
 /** Pointer arithmetic (`ptr + n`, `ptr++`). Phase 6 extends this to
  * work on stack arrays as well as heap allocations — both use the same
- * slot model, so bounds checking is identical. */
+ * slot model, so bounds checking is identical.
+ *
+ * Phase 5.2 hardening: validates integer offsets, checks use-after-free
+ * on freed heap blocks, and provides clear safety diagnostics. */
 function pointerArithmetic(pointer: CPointerValue, offset: number, scope: Scope, node: SyntaxNode): CPointerValue {
   if (pointer.target === null) {
     throw new InterpreterError("Pointer arithmetic on a NULL pointer", node);
   }
-  const newSlot = pointer.target.slot + offset;
+  if (!Number.isInteger(offset)) {
+    throw new InterpreterError("Pointer arithmetic requires an integer offset", node);
+  }
+  const stride = pointerStride(pointer.dimensions);
+  const newSlot = pointer.target.slot + offset * stride;
 
   if (pointer.target.space === "heap") {
     const allocation = scope.memory.getAllocation(pointer.target);
-    if (!allocation || newSlot < 0 || newSlot >= allocation.slotCount) {
+    if (!allocation || !allocation.active) {
       throw new InterpreterError(
-        `Pointer arithmetic moved outside the bounds of the allocated block (${allocation?.slotCount ?? 0} element(s))`,
+        `Use after free: pointer arithmetic on ${formatAddress(pointer.target)} which was already freed`,
+        node,
+      );
+    }
+    if (newSlot < 0 || newSlot >= allocation.slotCount) {
+      throw new InterpreterError(
+        `Pointer arithmetic moved outside the bounds of the allocated block (${allocation.slotCount} element(s))`,
         node,
       );
     }
@@ -619,7 +678,20 @@ function* callFunction(
   yield makeStep(fnNode, "call-enter", callStack, scope, `Entering function "${name}"`);
 
   const bodyNode = fnNode.childForFieldName("body");
-  const result = bodyNode ? yield* executeBlock(bodyNode, scope, functions, callStack) : NORMAL;
+  let result: StatementResult = NORMAL;
+  if (bodyNode) {
+    try {
+      result = yield* executeBlock(bodyNode, scope, functions, callStack);
+    } catch (signal) {
+      if (signal instanceof BreakSignal) {
+        throw new InterpreterError("break statement not within a loop or switch", fnNode);
+      }
+      if (signal instanceof ContinueSignal) {
+        throw new InterpreterError("continue statement not within a loop", fnNode);
+      }
+      throw signal;
+    }
+  }
   const returnValue = result.kind === "return" ? result.value : undefined;
 
   // frame.currentScope, not the bare `scope` — the function body is
@@ -776,6 +848,98 @@ function* executeStatement(
       yield makeStep(node, "statement", callStack, scope, "continue;");
       throw new ContinueSignal();
 
+    case "switch_statement": {
+      const conditionNode = unwrapParens(node.childForFieldName("condition")!);
+      const bodyNode = node.childForFieldName("body");
+      if (!bodyNode) return NORMAL;
+
+      yield makeStep(node, "statement", callStack, scope, `switch (${truncate(conditionNode.text, 40)})`);
+      const conditionValue = yield* evaluate(conditionNode, scope, functions, callStack);
+      if (conditionValue.kind !== "scalar") {
+        throw new InterpreterError("switch condition must have integer type", conditionNode);
+      }
+
+      const switchScope = new Scope(scope);
+
+      // Collect all case/default statements in the switch body
+      const rawChildren = bodyNode.type === "compound_statement" ? namedChildren(bodyNode) : [bodyNode];
+
+      const caseStatements: SyntaxNode[] = [];
+      for (const child of rawChildren) {
+        if (child.type === "case_statement") {
+          caseStatements.push(child);
+        } else if (child.type === "declaration") {
+          yield* executeDeclaration(child, switchScope, functions, callStack);
+        }
+      }
+
+      if (caseStatements.length === 0) {
+        return NORMAL;
+      }
+
+      // Evaluate case labels and find start point
+      let matchedIndex = -1;
+      let defaultIndex = -1;
+      const seenValues = new Set<number>();
+
+      for (let i = 0; i < caseStatements.length; i++) {
+        const caseStmt = caseStatements[i];
+        const valNode = caseStmt.childForFieldName("value");
+        if (valNode) {
+          const val = yield* evaluate(valNode, switchScope, functions, callStack);
+          if (val.kind !== "scalar") {
+            throw new InterpreterError("case label must have integer type", valNode);
+          }
+          if (seenValues.has(val.value)) {
+            throw new InterpreterError(`duplicate case value '${val.value}'`, valNode);
+          }
+          seenValues.add(val.value);
+
+          if (matchedIndex === -1 && val.value === conditionValue.value) {
+            matchedIndex = i;
+          }
+        } else {
+          // default:
+          if (defaultIndex !== -1) {
+            throw new InterpreterError("multiple default labels in one switch", caseStmt);
+          }
+          defaultIndex = i;
+        }
+      }
+
+      const startIndex = matchedIndex !== -1 ? matchedIndex : defaultIndex;
+      if (startIndex === -1) {
+        return NORMAL;
+      }
+
+      // Execute from startIndex to the end, supporting fallthrough
+      for (let i = startIndex; i < caseStatements.length; i++) {
+        const caseStmt = caseStatements[i];
+        const valNode = caseStmt.childForFieldName("value");
+        const caseLabel = valNode ? `case ${valNode.text}:` : "default:";
+        yield makeStep(caseStmt, "statement", callStack, switchScope, caseLabel);
+
+        const valId = valNode?.id;
+        const stmts = namedChildren(caseStmt).filter((c) => valId === undefined || c.id !== valId);
+        for (const stmt of stmts) {
+          try {
+            const result = yield* executeStatement(stmt, switchScope, functions, callStack);
+            if (result.kind === "return") return result;
+          } catch (signal) {
+            if (signal instanceof BreakSignal) {
+              return NORMAL;
+            }
+            throw signal;
+          }
+        }
+      }
+
+      return NORMAL;
+    }
+
+    case "case_statement":
+      throw new InterpreterError("'case' or 'default' label not within a switch statement", node);
+
     case "comment":
     case "preproc_include":
     case "preproc_def":
@@ -800,61 +964,92 @@ function* executeDeclaration(
   functions: Map<string, SyntaxNode>,
   callStack: RuntimeFrame[],
 ): Step<void> {
-  const baseType = mapPrimitiveType(node.childForFieldName("type")?.text);
-  const declarator = node.childForFieldName("declarator");
-  if (!declarator) unsupported(node, "declaration has no declarator");
+  const typeNode = node.childForFieldName("type");
+  const baseType = mapPrimitiveType(typeNode?.text);
 
-  if (declarator.type === "init_declarator") {
-    const innerDeclarator = declarator.childForFieldName("declarator");
-    const valueNode = declarator.childForFieldName("value");
-    if (!innerDeclarator) unsupported(declarator, "missing variable name");
-    const resolved = resolveDeclarator(innerDeclarator, baseType);
-    if (!resolved) {
-      unsupported(innerDeclarator, "only simple variables, pointers, and arrays are supported (no function pointers)");
-    }
+  // Collect all declarator nodes (handles multi-variable declarations like int x = 2, y = 0;)
+  const typeId = typeNode?.id;
+  const declarators = namedChildren(node).filter((c) => typeId === undefined || c.id !== typeId);
+  if (declarators.length === 0) {
+    const fallback = node.childForFieldName("declarator");
+    if (fallback) declarators.push(fallback);
+    else unsupported(node, "declaration has no declarator");
+  }
 
-    // Phase 6: array with initializer — int arr[3] = {10, 20, 30};
-    if (resolved.arraySize !== undefined) {
-      const baseAddress = scope.memory.allocateStackArray(
-        resolved.name,
-        resolved.arraySize,
-        defaultValueForType(baseType),
-      );
-      // Write initializer values if present
-      if (valueNode && valueNode.type === "initializer_list") {
-        const initChildren = namedChildren(valueNode);
-        for (let i = 0; i < Math.min(initChildren.length, resolved.arraySize); i++) {
-          const elemValue = yield* evaluate(initChildren[i], scope, functions, callStack);
-          scope.memory.write({ ...baseAddress, slot: i }, elemValue);
-        }
+  for (const declarator of declarators) {
+    if (declarator.type === "init_declarator") {
+      const innerDeclarator = declarator.childForFieldName("declarator");
+      const valueNode = declarator.childForFieldName("value");
+      if (!innerDeclarator) unsupported(declarator, "missing variable name");
+      const resolved = resolveDeclarator(innerDeclarator, baseType);
+      if (!resolved) {
+        unsupported(innerDeclarator, "only simple variables, pointers, and arrays are supported (no function pointers)");
       }
-      const arrVal = arrayValue(baseType, baseAddress, resolved.arraySize);
-      scope.declareArray(resolved.name, arrVal);
-      return;
-    }
 
-    const value = valueNode ? yield* evaluate(valueNode, scope, functions, callStack) : defaultForResolvedType(resolved.type);
-    scope.declare(resolved.name, value);
-    if (value.kind === "pointer") scope.memory.recordPointerAssign(resolved.name, value.target);
-  } else {
-    const resolved = resolveDeclarator(declarator, baseType);
-    if (!resolved) {
-      unsupported(declarator, "only simple variables, pointers, and arrays are supported (no function pointers)");
-    }
+      // Phase 6: array with initializer — int arr[3] = {10, 20, 30};
+      // Phase 6.2: 2D array with nested initializer — int matrix[2][3] = { {1,2,3}, {4,5,6} };
+      if (resolved.arraySize !== undefined) {
+        const baseAddress = scope.memory.allocateStackArray(
+          resolved.name,
+          resolved.arraySize,
+          defaultValueForType(baseType),
+          resolved.dimensions,
+        );
+        // Write initializer values if present
+        if (valueNode && valueNode.type === "initializer_list") {
+          const initChildren = namedChildren(valueNode);
+          if (resolved.dimensions && resolved.dimensions.length === 2) {
+            const [rows, cols] = resolved.dimensions;
+            for (let r = 0; r < Math.min(initChildren.length, rows); r++) {
+              const rowNode = initChildren[r];
+              if (rowNode.type === "initializer_list") {
+                const elemChildren = namedChildren(rowNode);
+                for (let c = 0; c < Math.min(elemChildren.length, cols); c++) {
+                  const elemValue = yield* evaluate(elemChildren[c], scope, functions, callStack);
+                  scope.memory.write({ ...baseAddress, slot: r * cols + c }, elemValue);
+                }
+              } else {
+                // Flat element in flat initializer list for 2D array
+                const elemValue = yield* evaluate(rowNode, scope, functions, callStack);
+                scope.memory.write({ ...baseAddress, slot: r }, elemValue);
+              }
+            }
+          } else {
+            for (let i = 0; i < Math.min(initChildren.length, resolved.arraySize); i++) {
+              const elemValue = yield* evaluate(initChildren[i], scope, functions, callStack);
+              scope.memory.write({ ...baseAddress, slot: i }, elemValue);
+            }
+          }
+        }
+        const arrVal = arrayValue(baseType, baseAddress, resolved.arraySize, resolved.dimensions);
+        scope.declareArray(resolved.name, arrVal);
+        continue;
+      }
 
-    // Phase 6: uninitialized array — int arr[5];
-    if (resolved.arraySize !== undefined) {
-      const baseAddress = scope.memory.allocateStackArray(
-        resolved.name,
-        resolved.arraySize,
-        defaultValueForType(baseType),
-      );
-      const arrVal = arrayValue(baseType, baseAddress, resolved.arraySize);
-      scope.declareArray(resolved.name, arrVal);
-      return;
-    }
+      const value = valueNode ? yield* evaluate(valueNode, scope, functions, callStack) : defaultForResolvedType(resolved.type);
+      scope.declare(resolved.name, value);
+      if (value.kind === "pointer") scope.memory.recordPointerAssign(resolved.name, value.target);
+    } else {
+      const resolved = resolveDeclarator(declarator, baseType);
+      if (!resolved) {
+        unsupported(declarator, "only simple variables, pointers, and arrays are supported (no function pointers)");
+      }
 
-    scope.declare(resolved.name, defaultForResolvedType(resolved.type));
+      // Phase 6: uninitialized array — int arr[5]; int matrix[5][5];
+      if (resolved.arraySize !== undefined) {
+        const baseAddress = scope.memory.allocateStackArray(
+          resolved.name,
+          resolved.arraySize,
+          defaultValueForType(baseType),
+          resolved.dimensions,
+        );
+        const arrVal = arrayValue(baseType, baseAddress, resolved.arraySize, resolved.dimensions);
+        scope.declareArray(resolved.name, arrVal);
+        continue;
+      }
+
+      scope.declare(resolved.name, defaultForResolvedType(resolved.type));
+    }
   }
 }
 
@@ -890,7 +1085,7 @@ function* evaluate(node: SyntaxNode, scope: Scope, functions: Map<string, Syntax
       // Phase 6: array-to-pointer decay — evaluating an array name
       // produces a pointer to its first element, matching C semantics.
       if (isArray(value)) {
-        return pointerValue(value.elementType, value.baseAddress);
+        return pointerValue(value.elementType, value.baseAddress, value.dimensions ?? [value.length]);
       }
       return value;
     }
@@ -911,6 +1106,10 @@ function* evaluate(node: SyntaxNode, scope: Scope, functions: Map<string, Syntax
           if (operator === "-") {
             if (left.target === null || right.target === null) {
               throw new InterpreterError("Pointer subtraction involving a NULL pointer", node);
+            }
+            // Phase 5.2: incompatible pointer type check
+            if (formatPointerType(left.pointerType) !== formatPointerType(right.pointerType)) {
+              throw new InterpreterError("Invalid pointer subtraction: incompatible pointer types", node);
             }
             if (left.target.space !== right.target.space || left.target.id !== right.target.id) {
               throw new InterpreterError("Invalid pointer subtraction: both pointers must refer to the same allocation or array object", node);
@@ -942,16 +1141,35 @@ function* evaluate(node: SyntaxNode, scope: Scope, functions: Map<string, Syntax
             if (operator === "<=") return cBool(diff <= 0);
             return cBool(diff >= 0); // ">="
           }
-          return comparePointers(operator, left, right);
+          // == and != go through comparePointers
+          if (operator === "==" || operator === "!=") {
+            return comparePointers(operator, left, right);
+          }
+          // Phase 5.2: any other binary operator between two pointers is invalid.
+          if (operator === "+") {
+            throw new InterpreterError("Cannot add two pointers together", node);
+          }
+          throw new InterpreterError(`Invalid pointer operation: operator "${operator}" cannot be applied between two pointers`, node);
         }
-        // pointer +/- integer (either order) is pointer arithmetic.
+        // Phase 5.2: one pointer, one non-pointer. Only + and - are valid.
         const pointer = isPointer(left) ? left : (right as CPointerValue);
         const offsetValue = isPointer(left) ? right : left;
-        if (isPointer(offsetValue)) unsupported(node, "arithmetic between two pointers (other than subtraction and comparison) isn't supported");
-        if (isArray(offsetValue)) unsupported(node, "arithmetic between a pointer and an array isn't supported");
-        if (operator === "+") return pointerArithmetic(pointer, offsetValue.value, scope, node);
-        if (operator === "-" && isPointer(left)) return pointerArithmetic(pointer, -offsetValue.value, scope, node);
-        unsupported(node, `"${operator}" is not supported between a pointer and a number`);
+        if (isArray(offsetValue)) {
+          throw new InterpreterError("Arithmetic between a pointer and an array is not supported", node);
+        }
+        if (operator === "+") {
+          if (!isScalar(offsetValue)) throw new InterpreterError("Pointer arithmetic requires an integer offset", node);
+          return pointerArithmetic(pointer, offsetValue.value, scope, node);
+        }
+        if (operator === "-") {
+          if (!isPointer(left)) {
+            throw new InterpreterError("Invalid pointer arithmetic: cannot subtract a pointer from an integer", node);
+          }
+          if (!isScalar(offsetValue)) throw new InterpreterError("Pointer arithmetic requires an integer offset", node);
+          return pointerArithmetic(pointer, -offsetValue.value, scope, node);
+        }
+        // Phase 5.2: any other operator (*, /, %, <<, >>, &, |, ^, etc.) is invalid.
+        throw new InterpreterError(`Invalid pointer operation: operator "${operator}" cannot be applied to a pointer`, node);
       }
 
       return applyBinaryOp(operator, left as CScalarValue, right as CScalarValue);
@@ -963,7 +1181,8 @@ function* evaluate(node: SyntaxNode, scope: Scope, functions: Map<string, Syntax
       const argument = yield* evaluate(argumentNode, scope, functions, callStack);
       if (isPointer(argument)) {
         if (operator === "!") return cBool(!isTruthy(argument));
-        unsupported(node, `"${operator}" is not supported on a pointer`);
+        // Phase 5.2: clear diagnostic instead of generic "unsupported"
+        throw new InterpreterError(`Invalid pointer operation: unary "${operator}" cannot be applied to a pointer`, node);
       }
       if (isArray(argument)) {
         unsupported(node, `"${operator}" is not supported on an array`);
@@ -1069,6 +1288,15 @@ function* evaluate(node: SyntaxNode, scope: Scope, functions: Map<string, Syntax
         const idxVal = yield* evaluate(idxNode, scope, functions, callStack);
         if (!isPointer(arrVal)) throw new InterpreterError("Subscript requires a pointer or array", arrNode);
         if (!isScalar(idxVal)) throw new InterpreterError("Array index must be an integer", idxNode);
+        if (arrVal.dimensions && arrVal.dimensions.length > 0) {
+          const maxDim = arrVal.dimensions[0];
+          if (idxVal.value < 0 || idxVal.value >= maxDim) {
+            throw new InterpreterError(
+              `Array index ${idxVal.value} is outside the bounds [0, ${maxDim - 1}]`,
+              idxNode,
+            );
+          }
+        }
         const target = pointerArithmetic(arrVal, idxVal.value, scope, node);
         if (target.target === null) throw new InterpreterError("Null pointer dereference in subscript assignment", node);
         const right = yield* evaluate(rightNode, scope, functions, callStack);
@@ -1084,12 +1312,17 @@ function* evaluate(node: SyntaxNode, scope: Scope, functions: Map<string, Syntax
       let newValue: CValue;
       if (operator === "=") {
         newValue = right;
-      } else if (current && isPointer(current) && (operator === "+=" || operator === "-=")) {
-        // Pointer compound assignment: p += n / p -= n
-        if (isPointer(right)) throw new InterpreterError(`Cannot use "${operator}" with two pointers`, node);
-        if (!isScalar(right)) throw new InterpreterError(`Cannot use "${operator}" with a non-scalar value`, node);
-        const offset = operator === "+=" ? right.value : -right.value;
-        newValue = pointerArithmetic(current, offset, scope, node);
+      } else if (current && isPointer(current)) {
+        // Phase 5.2: pointer compound assignment — only += and -= are valid.
+        if (operator === "+=" || operator === "-=") {
+          if (isPointer(right)) throw new InterpreterError(`Cannot use "${operator}" with two pointers`, node);
+          if (!isScalar(right)) throw new InterpreterError(`Cannot use "${operator}" with a non-scalar value`, node);
+          if (!Number.isInteger(right.value)) throw new InterpreterError("Pointer arithmetic requires an integer offset", node);
+          const offset = operator === "+=" ? right.value : -right.value;
+          newValue = pointerArithmetic(current, offset, scope, node);
+        } else {
+          throw new InterpreterError(`Invalid pointer assignment: operator "${operator}" cannot be applied to a pointer`, node);
+        }
       } else {
         newValue = applyBinaryOp(operator.slice(0, -1), current as CScalarValue, right as CScalarValue);
       }
@@ -1141,6 +1374,15 @@ function* evaluate(node: SyntaxNode, scope: Scope, functions: Map<string, Syntax
       }
       if (!isScalar(indexVal)) {
         throw new InterpreterError("Array index must be an integer", indexNode);
+      }
+      if (arrayVal.dimensions && arrayVal.dimensions.length > 0) {
+        const maxDim = arrayVal.dimensions[0];
+        if (indexVal.value < 0 || indexVal.value >= maxDim) {
+          throw new InterpreterError(
+            `Array index ${indexVal.value} is outside the bounds [0, ${maxDim - 1}]`,
+            indexNode,
+          );
+        }
       }
       const target = pointerArithmetic(arrayVal, indexVal.value, scope, node);
       return dereference(target, scope, node);

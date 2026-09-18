@@ -17,6 +17,7 @@ import {
   type PointerViewData,
   type PointerViewVariable,
   type StackFrame,
+  type StepMemoryAccess,
 } from "../models/executionTypes";
 
 const log = scope("executionEngine");
@@ -47,12 +48,17 @@ function toPlainValue(value: CValue, memory?: MemoryModel): ExecutionValue {
   }
   if (value.kind === "array") {
     const slotValues = memory ? memory.stackArraySlotValues(value.baseAddress) : [];
+    const typeStr =
+      value.dimensions && value.dimensions.length > 1
+        ? `${value.elementType}${value.dimensions.map((d) => `[${d}]`).join("")}`
+        : `${value.elementType}[${value.length}]`;
     return {
       kind: "array",
-      type: `${value.elementType}[${value.length}]`,
+      type: typeStr,
       address: value.baseAddress,
       length: value.length,
       values: slotValues.map((v) => toPlainValue(v, memory)),
+      dimensions: value.dimensions,
     };
   }
   return { kind: "scalar", type: value.type, value: value.value };
@@ -218,6 +224,24 @@ function computePointerViewData(
 function toExecutionStep(step: InterpreterStep): ExecutionStep {
   const callStack = step.callStack.map((frame, index) => toStackFrame(frame, index === step.callStack.length - 1, step.memory));
   const heap = toHeapBlocks(step.memory);
+  /** Phase 6.1: resolve raw MemoryEvents into StepMemoryAccess by
+   * looking up each address in the memory model for variable name
+   * and slot index. Only read/write events are forwarded — dereference
+   * events are internal bookkeeping not shown in the visualization. */
+  const stepAccesses: StepMemoryAccess[] = step.stepAccesses
+    .filter((e) => e.kind === "read" || e.kind === "write")
+    .map((e) => {
+      const cell = step.memory.getCell(e.address);
+      const access: StepMemoryAccess = {
+        kind: e.kind as "read" | "write",
+        address: e.address,
+      };
+      if (cell) {
+        access.variableName = cell.label;
+        access.slotIndex = e.address.slot;
+      }
+      return access;
+    });
   return {
     line: step.node.startPosition.row,
     column: step.node.startPosition.column,
@@ -231,6 +255,7 @@ function toExecutionStep(step: InterpreterStep): ExecutionStep {
     callStack,
     heap,
     pointerView: computePointerViewData(callStack, heap, step.memory),
+    stepAccesses,
   };
 }
 
