@@ -98,11 +98,6 @@ export function PointerViewPanel() {
     stackY += h + ROW_GAP;
   }
 
-  // NULL target (if any pointers are NULL)
-  const hasNull = relationships.some((r) => r.status === "null");
-  const nullNodeX = PAD + NODE_W + COL_GAP / 2 - NULL_NODE_W / 2;
-  const nullNodeY = stackY + 8;
-
   // Heap column: one node per block
   const heapX = PAD + NODE_W + COL_GAP;
   const heapNodes: { x: number; y: number; w: number; h: number; b: HeapBlock }[] = [];
@@ -112,13 +107,18 @@ export function PointerViewPanel() {
     heapY += HEAP_NODE_H + ROW_GAP;
   }
 
-  // SVG dimensions
-  const svgW = heapX + HEAP_NODE_W + PAD;
+  // NULL target (if any pointers are NULL)
+  const hasNull = relationships.some((r) => r.status === "null");
+  const nullNodeX = PAD + NODE_W + COL_GAP / 2 - NULL_NODE_W / 2;
+  const nullNodeY = Math.max(stackY, heapY) + 8;
+
+  // SVG dimensions: allow extra margin for outward loops on the heap side
+  const svgW = heapX + HEAP_NODE_W + PAD + 70;
   const svgH = Math.max(stackY, heapY, hasNull ? nullNodeY + NULL_NODE_H + PAD : 0) + PAD + 30;
 
   // ------ ARROW COMPUTATION ------
   type Arrow = {
-    kind: "stack-to-stack" | "stack-to-heap" | "null";
+    kind: "stack-to-stack" | "stack-to-heap" | "heap-to-heap" | "heap-to-null" | "null";
     x1: number;
     y1: number;
     x2: number;
@@ -127,14 +127,82 @@ export function PointerViewPanel() {
     dash?: string;
     label: string;
     stackIndex?: number;
+    heapIndex?: number;
   };
   const arrows: Arrow[] = [];
   let stackArrowCount = 0;
+  let heapArrowCount = 0;
+  const seenConnectorKeys = new Set<string>();
 
   for (const rel of relationships) {
-    // Find source node (the pointer variable in the stack column)
-    const srcNode = stackNodes.find((n) => n.v.name === rel.pointerName);
-    if (!srcNode) continue;
+    const isHeapSource = rel.pointerAddress?.space === "heap";
+    const srcStackNode = !isHeapSource ? stackNodes.find((n) => n.v.name === rel.pointerName) : undefined;
+    let srcHeapNode = isHeapSource
+      ? heapNodes.find((n) => n.b.address.id === rel.pointerAddress!.id)
+      : undefined;
+
+    // Fallback: match heap block by pointerName format like "H001->next"
+    if (!srcStackNode && !srcHeapNode && rel.pointerName.startsWith("H")) {
+      const match = rel.pointerName.match(/^H(\d+)/);
+      if (match) {
+        const id = parseInt(match[1], 10);
+        srcHeapNode = heapNodes.find((n) => n.b.address.id === id);
+      }
+    }
+
+    if (!srcStackNode && !srcHeapNode) continue;
+
+    if (srcHeapNode) {
+      // --- HEAP-ORIGINATED POINTER (e.g. struct Node* next field) ---
+      const srcKey = rel.pointerAddress ? formatAddress(rel.pointerAddress) : formatAddress(srcHeapNode.b.address);
+      const tgtKey = rel.targetAddress ? formatAddress(rel.targetAddress) : "NULL";
+      const connKey = `${srcKey}:next:${tgtKey}`;
+      if (seenConnectorKeys.has(connKey)) continue;
+      seenConnectorKeys.add(connKey);
+
+      if (rel.status === "null") {
+        // Arrow from heap node to central NULL node
+        arrows.push({
+          kind: "heap-to-null",
+          x1: srcHeapNode.x,
+          y1: srcHeapNode.y + 44,
+          x2: nullNodeX + NULL_NODE_W,
+          y2: nullNodeY + NULL_NODE_H / 2,
+          color: statusColor(rel.status),
+          dash: undefined,
+          label: rel.pointerName,
+        });
+        continue;
+      }
+
+      // Heap-to-heap connection
+      if (rel.targetRegion === "heap" && rel.targetAddress) {
+        const tgtHeapNode = heapNodes.find((n) => n.b.address.id === rel.targetAddress!.id);
+        if (tgtHeapNode) {
+          arrows.push({
+            kind: "heap-to-heap",
+            x1: srcHeapNode.x + srcHeapNode.w,
+            y1: srcHeapNode.y + 44,
+            x2: tgtHeapNode.x + tgtHeapNode.w,
+            y2: tgtHeapNode.y + tgtHeapNode.h / 2,
+            color: statusColor(rel.status),
+            dash: statusDash(rel.status),
+            label: rel.pointerName,
+            heapIndex: heapArrowCount++,
+          });
+          continue;
+        }
+      }
+      continue;
+    }
+
+    // --- STACK-ORIGINATED POINTER ---
+    const srcNode = srcStackNode!;
+    const srcKey = rel.pointerAddress ? formatAddress(rel.pointerAddress) : rel.pointerName;
+    const tgtKey = rel.targetAddress ? formatAddress(rel.targetAddress) : "NULL";
+    const connKey = `${srcKey}->${tgtKey}`;
+    if (seenConnectorKeys.has(connKey)) continue;
+    seenConnectorKeys.add(connKey);
 
     const x1 = srcNode.x + srcNode.w;
     const y1 = srcNode.y + srcNode.h / 2;
@@ -380,6 +448,18 @@ export function PointerViewPanel() {
                 <text x={x + 8} y={y + 45} fill={b.active ? "var(--color-fg)" : "var(--color-fg-muted)"} fontSize="10" fontFamily="var(--font-mono)">
                   [{b.values.map((v) => formatExecutionValue(v)).join(", ")}]
                 </text>
+
+                {/* Pointer indicator dot on heap cards with pointer fields */}
+                {b.values.some((v) => v.kind === "pointer") && (
+                  <circle
+                    cx={x + w}
+                    cy={y + 44}
+                    r={4}
+                    fill="var(--color-accent)"
+                    stroke="var(--color-surface-raised)"
+                    strokeWidth={1.5}
+                  />
+                )}
               </g>
             );
           })}
@@ -392,6 +472,13 @@ export function PointerViewPanel() {
             if (a.kind === "stack-to-stack") {
               const idx = a.stackIndex ?? 0;
               pathD = routeOutwardLoop(a.x1, a.y1, a.x2, a.y2, idx);
+            } else if (a.kind === "heap-to-heap") {
+              const idx = a.heapIndex ?? 0;
+              pathD = routeOutwardLoop(a.x1, a.y1, a.x2, a.y2, idx);
+            } else if (a.kind === "heap-to-null") {
+              const dx = Math.abs(a.x1 - a.x2);
+              const cp = Math.max(30, dx * 0.4);
+              pathD = `M ${a.x1} ${a.y1} C ${a.x1 - cp} ${a.y1}, ${a.x2 + cp} ${a.y2}, ${a.x2} ${a.y2}`;
             } else {
               // Existing stack-to-heap and null routing - PRESERVED EXACTLY via centralized routeBezier
               pathD = routeBezier(a.x1, a.y1, a.x2, a.y2);

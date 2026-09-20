@@ -15,9 +15,15 @@ export type CType = "int" | "float" | "double" | "char";
  * pointer-to-pointer (int**) is representable, though only depth 1–2 is
  * verified/tested; see docs/PHASE_5_POINTERS.md → "Supported pointer
  * depth". */
+/** Phase 6.2: struct pointee marker — used when a pointer points to a
+ * struct (e.g. `struct Node *head`). */
+export interface CStructPointee {
+  kind: "struct";
+  name: string;
+}
 export interface CPointerType {
   kind: "pointer";
-  pointee: CType | CPointerType;
+  pointee: CType | CPointerType | CStructPointee;
 }
 
 export interface CScalarValue {
@@ -72,7 +78,7 @@ export function scalar(type: CType, value: number): CScalarValue {
   return { kind: "scalar", type, value };
 }
 
-export function pointerValue(pointee: CType | CPointerType, target: Address | null, dimensions?: number[]): CPointerValue {
+export function pointerValue(pointee: CType | CPointerType | CStructPointee, target: Address | null, dimensions?: number[]): CPointerValue {
   return { kind: "pointer", pointerType: { kind: "pointer", pointee }, target, dimensions };
 }
 
@@ -197,9 +203,15 @@ export function comparePointers(operator: string, left: CPointerValue, right: CP
   throw new CRuntimeError(`"${operator}" is not supported between pointers — only == and != are`);
 }
 
-export function formatPointerType(type: CType | CPointerType): string {
+export function formatPointerType(type: CType | CPointerType | CStructPointee): string {
   if (typeof type === "string") return `${type}*`;
-  return `${formatPointerType(type.pointee)}*`;
+  if (type.kind === "struct") return `struct ${type.name}*`;
+  if (type.kind === "pointer") {
+    if (typeof type.pointee === "string") return `${type.pointee}*`;
+    if (type.pointee.kind === "struct") return `struct ${type.pointee.name}*`;
+    return `${formatPointerType(type.pointee)}*`;
+  }
+  return "pointer";
 }
 
 /** Parses a Tree-sitter `number_literal` token's text into a CValue.
@@ -248,7 +260,7 @@ export function defaultValueForType(type: CType): CScalarValue {
  * limitations": dereferencing a default-initialized pointer in Codevi
  * always gives a clear null-dereference error rather than reading
  * whatever garbage a real uninitialized pointer would contain. */
-export function defaultPointerValue(pointee: CType | CPointerType): CPointerValue {
+export function defaultPointerValue(pointee: CType | CPointerType | CStructPointee): CPointerValue {
   return pointerValue(pointee, null);
 }
 

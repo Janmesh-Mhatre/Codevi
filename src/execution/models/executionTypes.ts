@@ -94,6 +94,10 @@ export interface ExecutionStep {
   /** Phase 6.1: resolved per-step memory accesses (reads & writes)
    * for the visualization layer's slot highlighting and access log. */
   stepAccesses: StepMemoryAccess[];
+  /** Global variables snapshot active at this step. */
+  globals?: Record<string, ExecutionValue>;
+  /** Global variables storage addresses. */
+  globalAddresses?: Record<string, Address>;
 }
 
 /** Phase 6: one pointer’s relationship to its target. */

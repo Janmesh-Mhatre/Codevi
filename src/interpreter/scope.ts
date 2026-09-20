@@ -2,6 +2,7 @@ import type { Address } from "../memory/memory";
 import type { MemoryModel } from "../memory/memory";
 import type { CArrayValue, CValue } from "./values";
 import { CRuntimeError } from "./values";
+import type { StructDefinition } from "./types";
 
 /**
  * A block-scoped *symbol table* — matching real C block scoping (a `{ }`
@@ -27,6 +28,10 @@ export class Scope {
   /** Phase 6: stores array metadata directly so lookups and snapshots
    * resolve array values without allocating extraneous dummy stack cells. */
   private readonly arrayValues = new Map<string, CArrayValue>();
+  /** Phase 6.2: struct type registry — struct definitions are looked up
+   * by tag name (`"Node"` for `struct Node`). Chains to parent scope so
+   * struct definitions at outer scopes are visible in inner blocks. */
+  private readonly structDefs = new Map<string, StructDefinition>();
   readonly memory: MemoryModel;
 
   /** Child scopes only need a parent — they inherit its MemoryModel
@@ -103,8 +108,8 @@ export class Scope {
    * innermost declaration winning on a name collision. Used to populate
    * ExecutionStep.variables — see docs/PHASE_3_EXECUTION.md and
    * docs/PHASE_4_VISUALIZATION.md. */
-  snapshot(): Record<string, CValue> {
-    const result = this.parent?.snapshot() ?? {};
+  snapshot(stopScope?: Scope | null): Record<string, CValue> {
+    const result = (this.parent && this.parent !== stopScope) ? this.parent.snapshot(stopScope) : {};
     for (const [name, address] of this.bindings) {
       if (this.arrayValues.has(name)) {
         result[name] = this.arrayValues.get(name)!;
@@ -120,11 +125,22 @@ export class Scope {
    * Record<string, CValue> return shape, which other code (and tests)
    * already depends on exactly as-is. Powers the Memory panel's stack
    * variable addresses — see docs/PHASE_5_POINTERS.md. */
-  snapshotAddresses(): Record<string, Address> {
-    const result = this.parent?.snapshotAddresses() ?? {};
+  snapshotAddresses(stopScope?: Scope | null): Record<string, Address> {
+    const result = (this.parent && this.parent !== stopScope) ? this.parent.snapshotAddresses(stopScope) : {};
     for (const [name, address] of this.bindings) {
       result[name] = address;
     }
     return result;
+  }
+
+  /** Phase 6.2: registers a struct type definition in this scope. */
+  defineStruct(name: string, def: StructDefinition): void {
+    this.structDefs.set(name, def);
+  }
+
+  /** Phase 6.2: looks up a struct type definition by tag name, searching
+   * outward through enclosing scopes (matching C's scoping rules). */
+  lookupStruct(name: string): StructDefinition | undefined {
+    return this.structDefs.get(name) ?? this.parent?.lookupStruct(name);
   }
 }

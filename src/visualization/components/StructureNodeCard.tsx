@@ -28,6 +28,7 @@ export const StructureNodeCard: React.FC<StructureNodeCardProps> = ({
 }) => {
   const addrStr = formatAddress(node.address);
   const isArray = node.kind === "array";
+  const isLinkedList = node.kind === "linked-list";
   const slotCount = node.slots.length;
   const isHeap = node.address.space === "heap";
 
@@ -212,8 +213,127 @@ export const StructureNodeCard: React.FC<StructureNodeCardProps> = ({
         </g>
       )}
 
+      {/* Phase 6.2: Linked List Dual-Compartment Node: [ data | next ● ] */}
+      {isLinkedList && slotCount >= 2 && (
+        <g transform={`translate(${x + 10}, ${y + 24})`}>
+          {/* Active index tags floating above data compartment */}
+          {(node.slots[0]?.activeIndexTags ?? []).map((tag, ti) => (
+            <g key={`ll-tag-${ti}`}>
+              <rect
+                x={0}
+                y={-18 - ti * 14}
+                width={tag.length * 6.5 + 8}
+                height={13}
+                rx={2}
+                fill="var(--color-accent)"
+                opacity={0.9}
+              />
+              <text
+                x={4}
+                y={-8 - ti * 14}
+                fill="var(--color-accent-fg)"
+                fontSize="9"
+                fontWeight="700"
+                fontFamily="var(--font-mono)"
+              >
+                {tag}
+              </text>
+            </g>
+          ))}
+
+          {/* Compartment container */}
+          <rect
+            x={0}
+            y={4}
+            width={w - 20}
+            height={44}
+            rx={4}
+            fill="var(--color-surface)"
+            stroke="var(--color-border)"
+            strokeWidth={1}
+          />
+          {/* Divider between data and next */}
+          <line
+            x1={(w - 20) * 0.58}
+            y1={4}
+            x2={(w - 20) * 0.58}
+            y2={48}
+            stroke="var(--color-border)"
+            strokeWidth={1}
+          />
+
+          {/* Left compartment: data */}
+          <g
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelectSlot?.(node, 0);
+            }}
+            style={{ cursor: "pointer" }}
+          >
+            <text
+              x={6}
+              y={18}
+              fill="var(--color-fg-muted)"
+              fontSize="9"
+              fontFamily="var(--font-mono)"
+            >
+              data
+            </text>
+            <text
+              x={((w - 20) * 0.58) / 2}
+              y={38}
+              fill="var(--color-fg)"
+              fontSize="12"
+              fontWeight="700"
+              fontFamily="var(--font-mono)"
+              textAnchor="middle"
+            >
+              {formatExecutionValue(node.slots[0].value)}
+            </text>
+          </g>
+
+          {/* Right compartment: next */}
+          <g
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelectSlot?.(node, 1);
+            }}
+            style={{ cursor: "pointer" }}
+          >
+            <text
+              x={(w - 20) * 0.58 + 6}
+              y={18}
+              fill="var(--color-fg-muted)"
+              fontSize="9"
+              fontFamily="var(--font-mono)"
+            >
+              next
+            </text>
+            {/* Connector anchor dot / status */}
+            <circle
+              cx={(w - 20) * 0.58 + ((w - 20) * 0.42) / 2}
+              cy={34}
+              r={5}
+              fill={node.slots[1].value.kind === "pointer" && node.slots[1].value.target === null ? "var(--color-fg-muted)" : "var(--color-accent)"}
+            />
+            {node.slots[1].value.kind === "pointer" && node.slots[1].value.target === null && (
+              <text
+                x={(w - 20) * 0.58 + ((w - 20) * 0.42) / 2 + 10}
+                y={37}
+                fill="var(--color-fg-muted)"
+                fontSize="8"
+                fontWeight="600"
+                fontFamily="var(--font-mono)"
+              >
+                Ø
+              </text>
+            )}
+          </g>
+        </g>
+      )}
+
       {/* Scalar Slot for Single Values */}
-      {!isArray && slotCount === 1 && (
+      {!isArray && !isLinkedList && slotCount === 1 && (
         <g transform={`translate(${x + 10}, ${y + 22})`}>
           <text
             x={0}

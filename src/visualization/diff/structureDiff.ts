@@ -255,10 +255,12 @@ function resolveAccessToNodeId(
     for (const block of step.heap) {
       if (block.address.id === addr.id) {
         const baseAddr = formatAddress({ space: "heap", id: addr.id, slot: 0 });
+        const isLinkedListNode = block.slotCount >= 2 && block.values[1]?.kind === "pointer";
+        const fieldName = isLinkedListNode ? (addr.slot === 0 ? "data" : "next") : `[${addr.slot}]`;
         return {
-          nodeId: `heap:block:${baseAddr}`,
+          nodeId: isLinkedListNode ? `ll:node:${baseAddr}` : `heap:block:${baseAddr}`,
           slotIndex: addr.slot,
-          label: `heap[${addr.slot}]`,
+          label: isLinkedListNode ? `${baseAddr}->${fieldName}` : `heap[${addr.slot}]`,
           varName: baseAddr,
         };
       }

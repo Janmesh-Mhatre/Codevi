@@ -25,6 +25,9 @@ export function extractStructureGraph(step: ExecutionStep | null): StructureGrap
     extractStackArrays(activeFrame, structures);
   }
 
+  // Phase 6.2: Detect Linked Lists
+  extractLinkedLists(step, structures);
+
   // 2. Detect Heap allocations (dynamically allocated arrays or objects)
   extractHeapStructures(step.heap, structures);
 
@@ -109,6 +112,10 @@ function extractStackArrays(frame: StackFrame, out: StructureItem[]): void {
  */
 function extractHeapStructures(heap: HeapBlock[], out: StructureItem[]): void {
   for (const block of heap) {
+    // Phase 6.2: skip struct Node blocks (slot 1 is a pointer) so they don't produce duplicate arrays
+    const isLinkedListNode = block.slotCount >= 2 && block.values[1]?.kind === "pointer";
+    if (isLinkedListNode) continue;
+
     const addrStr = formatAddress(block.address);
     const slots: StructureSlot[] = [];
 
@@ -225,7 +232,14 @@ function extractPointerGraph(step: ExecutionStep, out: StructureItem[]): void {
   // 3. Links from pointer relationships
   for (let i = 0; i < pv.relationships.length; i++) {
     const rel = pv.relationships[i];
-    const srcNode = nodes.find((n) => n.id === `stack:${rel.pointerName}`);
+    let srcNode = nodes.find((n) => n.id === `stack:${rel.pointerName}`);
+    let sourceSlotIndex = 0;
+
+    if (!srcNode && rel.pointerAddress?.space === "heap") {
+      const heapAddrStr = formatAddress({ space: "heap", id: rel.pointerAddress.id, slot: 0 });
+      srcNode = nodes.find((n) => n.id === `heap:${heapAddrStr}`);
+      sourceSlotIndex = rel.pointerAddress.slot;
+    }
     if (!srcNode) continue;
 
     let targetNodeId: string | null = null;
@@ -238,7 +252,9 @@ function extractPointerGraph(step: ExecutionStep, out: StructureItem[]): void {
     } else if (rel.targetRegion === "heap" && rel.targetAddress) {
       targetNodeId = `heap:${formatAddress({ space: "heap", id: rel.targetAddress.id, slot: 0 })}`;
       targetSlot = rel.targetAddress.slot;
-      routingStyle = "bezier";
+      routingStyle = srcNode.id.startsWith("heap:")
+        ? (targetNodeId === srcNode.id ? "self-loop" : "outward-loop")
+        : "bezier";
     } else if (rel.targetAddress) {
       // Stack target
       const targetNode = nodes.find(
@@ -258,7 +274,7 @@ function extractPointerGraph(step: ExecutionStep, out: StructureItem[]): void {
     links.push({
       id: `link:${rel.pointerName}->${targetNodeId ?? "NULL"}`,
       sourceNodeId: srcNode.id,
-      sourceSlotIndex: 0,
+      sourceSlotIndex,
       targetNodeId,
       targetSlotIndex: targetSlot,
       targetAddress: rel.targetAddress,
@@ -352,3 +368,230 @@ function annotateBoundsCues(structures: StructureItem[]): void {
     }
   }
 }
+
+/**
+ * Phase 6.2: Extracts linked list chains from heap blocks and stack pointers.
+ * Detects struct Node allocations (where slot 1 is a next pointer), resolves
+ * chain linkages, attaches active traversal pointer tags (e.g. curr ▾, head ➔),
+ * and handles circular list termination gracefully.
+ */
+function extractLinkedLists(step: ExecutionStep, out: StructureItem[]): void {
+  const activeFrame = step.callStack.find((f) => f.isActive) ?? step.callStack[step.callStack.length - 1];
+  if (!activeFrame) return;
+
+  // Find all candidate linked list nodes in heap:
+  // A heap block with at least 2 slots where slot 1 is a pointer (or null pointer).
+  const nodeMap = new Map<string, HeapBlock>();
+  for (const block of step.heap) {
+    if (!block.active) continue;
+    if (block.slotCount >= 2 && block.values.length >= 2) {
+      const slot1 = block.values[1];
+      if (slot1 && slot1.kind === "pointer") {
+        nodeMap.set(formatAddress(block.address), block);
+      }
+    }
+  }
+
+  if (nodeMap.size === 0) return;
+
+  // Collect stack and global pointers that point to any of these nodes
+  const allVars: [string, ExecutionValue][] = [
+    ...Object.entries(activeFrame.parameters),
+    ...Object.entries(activeFrame.locals),
+    ...(step.globals ? Object.entries(step.globals) : []),
+  ];
+
+  // Map each node address to stack pointer names pointing to it (e.g. "head", "curr")
+  const nodePointers = new Map<string, string[]>();
+  for (const [varName, val] of allVars) {
+    if (val.kind === "pointer" && val.target && val.target.space === "heap") {
+      const targetStr = formatAddress({ space: "heap", id: val.target.id, slot: 0 });
+      if (nodeMap.has(targetStr)) {
+        const list = nodePointers.get(targetStr) ?? [];
+        list.push(varName);
+        nodePointers.set(targetStr, list);
+      }
+    }
+  }
+
+  // Determine the list heads.
+  // In-degree: how many other nodes have `next` pointing to this node?
+  const inDegree = new Map<string, number>();
+  for (const key of nodeMap.keys()) {
+    inDegree.set(key, 0);
+  }
+  for (const block of nodeMap.values()) {
+    const nextVal = block.values[1];
+    if (nextVal && nextVal.kind === "pointer" && nextVal.target && nextVal.target.space === "heap") {
+      const nextKey = formatAddress({ space: "heap", id: nextVal.target.id, slot: 0 });
+      if (inDegree.has(nextKey)) {
+        inDegree.set(nextKey, (inDegree.get(nextKey) ?? 0) + 1);
+      }
+    }
+  }
+
+  // Candidate heads:
+  // 1. Stack pointer named "head", "list", "first", "root"
+  // 2. Nodes with in-degree === 0 that are pointed to by any stack pointer
+  // 3. Any node pointed to by a stack pointer if all in-degree > 0 (cycle)
+  const headCandidates: string[] = [];
+  for (const [varName, val] of allVars) {
+    if (val.kind === "pointer" && val.target && val.target.space === "heap") {
+      const targetStr = formatAddress({ space: "heap", id: val.target.id, slot: 0 });
+      if (nodeMap.has(targetStr)) {
+        const lower = varName.toLowerCase();
+        if (lower === "head" || lower === "list" || lower === "first" || lower === "root") {
+          if (!headCandidates.includes(targetStr)) headCandidates.unshift(targetStr);
+        }
+      }
+    }
+  }
+
+  for (const [nodeKey, deg] of inDegree.entries()) {
+    if (deg === 0 && nodePointers.has(nodeKey) && !headCandidates.includes(nodeKey)) {
+      headCandidates.push(nodeKey);
+    }
+  }
+
+  // Fallback: if no stack pointer matches, any in-degree 0 node
+  if (headCandidates.length === 0) {
+    for (const [nodeKey, deg] of inDegree.entries()) {
+      if (deg === 0 && !headCandidates.includes(nodeKey)) {
+        headCandidates.push(nodeKey);
+      }
+    }
+  }
+
+  // If still none (e.g. single circular list), take the first node pointed to by stack
+  if (headCandidates.length === 0 && nodePointers.size > 0) {
+    headCandidates.push(nodePointers.keys().next().value!);
+  }
+
+  const visitedGlobal = new Set<string>();
+
+  for (const headKey of headCandidates) {
+    if (visitedGlobal.has(headKey)) continue;
+
+    const chainNodes: StructureNode[] = [];
+    const chainLinks: StructureLink[] = [];
+    let currentKey: string | null = headKey;
+    const visitedInChain = new Set<string>();
+    let nodeIndex = 0;
+
+    while (currentKey && nodeMap.has(currentKey)) {
+      if (visitedInChain.has(currentKey)) {
+        // Cycle detected: add link back to the cycle node and break
+        const prevNode = chainNodes[chainNodes.length - 1];
+        if (prevNode) {
+          chainLinks.push({
+            id: `ll:link:${prevNode.id}->${currentKey}`,
+            sourceNodeId: prevNode.id,
+            sourceSlotIndex: 1,
+            targetNodeId: `ll:node:${currentKey}`,
+            targetSlotIndex: 0,
+            targetAddress: nodeMap.get(currentKey)!.address,
+            label: "next (cycle)",
+            status: "valid",
+            routingStyle: "outward-loop",
+          });
+        }
+        break;
+      }
+
+      visitedInChain.add(currentKey);
+      visitedGlobal.add(currentKey);
+
+      const block = nodeMap.get(currentKey)!;
+      const dataVal = block.values[0] ?? { kind: "scalar", type: "int", value: 0 };
+      const nextVal = block.values[1];
+
+      // Active index tags for this node from stack pointers
+      const ptrNames = nodePointers.get(currentKey) ?? [];
+      const tags = ptrNames.map((p) => (p.toLowerCase() === "head" ? `${p} ➔` : `${p} ▾`));
+
+      const nodeId = `ll:node:${currentKey}`;
+      const slots: StructureSlot[] = [
+        {
+          index: 0,
+          name: "data",
+          value: dataVal,
+          address: { space: "heap", id: block.address.id, slot: 0 },
+          highlight: "none",
+          activeIndexTags: tags.length > 0 ? tags : undefined,
+        },
+        {
+          index: 1,
+          name: "next",
+          value: nextVal,
+          address: { space: "heap", id: block.address.id, slot: 1 },
+          highlight: "none",
+        },
+      ];
+
+      chainNodes.push({
+        id: nodeId,
+        kind: "linked-list",
+        label: `Node ${nodeIndex} (${currentKey})`,
+        address: block.address,
+        type: "struct Node",
+        slots,
+        highlight: block.active ? "none" : "target",
+        metadata: {
+          nodeIndex,
+          heapAddress: currentKey,
+          byteSize: block.byteSize,
+        },
+      });
+
+      // Link to next
+      if (nextVal && nextVal.kind === "pointer") {
+        if (nextVal.target === null) {
+          chainLinks.push({
+            id: `ll:link:${nodeId}->null`,
+            sourceNodeId: nodeId,
+            sourceSlotIndex: 1,
+            targetNodeId: null,
+            targetSlotIndex: 0,
+            targetAddress: null,
+            label: "next",
+            status: "null",
+            routingStyle: "direct",
+          });
+          currentKey = null;
+        } else if (nextVal.target.space === "heap") {
+          const nextKey = formatAddress({ space: "heap", id: nextVal.target.id, slot: 0 });
+          const targetNodeId = `ll:node:${nextKey}`;
+          chainLinks.push({
+            id: `ll:link:${nodeId}->${targetNodeId}`,
+            sourceNodeId: nodeId,
+            sourceSlotIndex: 1,
+            targetNodeId,
+            targetSlotIndex: 0,
+            targetAddress: nextVal.target,
+            label: "next",
+            status: "valid",
+            routingStyle: "direct",
+          });
+          currentKey = nextKey;
+        } else {
+          currentKey = null;
+        }
+      } else {
+        currentKey = null;
+      }
+
+      nodeIndex++;
+    }
+
+    if (chainNodes.length > 0) {
+      out.push({
+        id: `linked-list:${headKey}`,
+        kind: "linked-list",
+        name: `Linked List (${headKey})`,
+        nodes: chainNodes,
+        links: chainLinks,
+      });
+    }
+  }
+}
+

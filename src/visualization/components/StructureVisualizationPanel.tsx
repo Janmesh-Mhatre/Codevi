@@ -6,6 +6,7 @@ import { extractStructureGraph } from "../detectors/structureDetector";
 import { diffExecutionSteps } from "../diff/structureDiff";
 import { layoutArrayStructures } from "../layout/arrayLayout";
 import { layoutPointerGraph } from "../layout/pointerGraphLayout";
+import { layoutLinkedListStructures } from "../layout/linkedListLayout";
 import { StructureControls } from "./StructureControls";
 import { StructureCanvas } from "./StructureCanvas";
 import { StructureNodeCard } from "./StructureNodeCard";
@@ -15,6 +16,7 @@ import type {
   PlacedNode,
   PlacedLink,
   StructuralChange,
+  LayoutRect,
 } from "../models/structureTypes";
 import type { ExecutionStep } from "../../execution/models/executionTypes";
 
@@ -56,6 +58,11 @@ export const StructureVisualizationPanel: React.FC = () => {
     return graph.structures.filter((s) => s.kind === "array");
   }, [graph]);
 
+  const linkedListStructures = useMemo(() => {
+    if (!graph) return [];
+    return graph.structures.filter((s) => s.kind === "linked-list");
+  }, [graph]);
+
   const pointerStructure = useMemo(() => {
     if (!graph) return null;
     return graph.structures.find((s) => s.kind === "pointer-graph") ?? null;
@@ -71,17 +78,47 @@ export const StructureVisualizationPanel: React.FC = () => {
     return { placedArrayNodes: res.placedNodes, arrayDimensions: { width: res.width, height: res.height } };
   }, [arrayStructures]);
 
+  const linkedListLayout = useMemo(() => {
+    if (!linkedListStructures.length) {
+      return { placedNodes: [], placedLinks: [], nullNodeRect: null, width: 0, height: 0 };
+    }
+    const allLLNodes = linkedListStructures.flatMap((s) => s.nodes);
+    const allLLLinks = linkedListStructures.flatMap((s) => s.links);
+    return layoutLinkedListStructures(allLLNodes, allLLLinks, 20, 20);
+  }, [linkedListStructures]);
+
   const pointerGraphLayout = useMemo(() => {
     if (!pointerStructure) return null;
     return layoutPointerGraph(pointerStructure.nodes, pointerStructure.links);
   }, [pointerStructure]);
 
   // Combine placed nodes and links depending on filter
-  const { allPlacedNodes, allPlacedLinks, canvasW, canvasH } = useMemo(() => {
+  const { allPlacedNodes, allPlacedLinks, nullNodeRect, canvasW, canvasH } = useMemo(() => {
     const nodes: PlacedNode[] = [];
     const links: PlacedLink[] = [];
+    let activeNullRect: LayoutRect | null = null;
 
     let startY = 20;
+
+    // Show linked lists if filter is "all" or "linked-list"
+    if ((structureFilter === "all" || structureFilter === "linked-list") && linkedListLayout.placedNodes.length > 0) {
+      for (const lln of linkedListLayout.placedNodes) {
+        nodes.push({ ...lln, y: lln.y + startY });
+      }
+      for (const pl of linkedListLayout.placedLinks) {
+        links.push({
+          ...pl,
+          pathD: pl.pathD.replace(/([0-9.]+)\s+([0-9.]+)/g, (_m, x, y) => `${x} ${parseFloat(y) + startY}`),
+        });
+      }
+      if (linkedListLayout.nullNodeRect) {
+        activeNullRect = {
+          ...linkedListLayout.nullNodeRect,
+          y: linkedListLayout.nullNodeRect.y + startY,
+        };
+      }
+      startY += linkedListLayout.height + 20;
+    }
 
     // Show arrays if filter is "all" or "array"
     if ((structureFilter === "all" || structureFilter === "array") && placedArrayNodes.length > 0) {
@@ -109,6 +146,7 @@ export const StructureVisualizationPanel: React.FC = () => {
 
     const maxW = Math.max(
       400,
+      linkedListLayout.width,
       arrayDimensions.width,
       pointerGraphLayout ? pointerGraphLayout.width : 0
     );
@@ -117,10 +155,11 @@ export const StructureVisualizationPanel: React.FC = () => {
     return {
       allPlacedNodes: nodes,
       allPlacedLinks: links,
+      nullNodeRect: activeNullRect,
       canvasW: maxW,
       canvasH: maxH,
     };
-  }, [structureFilter, placedArrayNodes, arrayDimensions, pointerGraphLayout]);
+  }, [structureFilter, linkedListLayout, placedArrayNodes, arrayDimensions, pointerGraphLayout]);
 
   // Handler for stepping to the next structural mutation
   const handleStepStructure = () => {
@@ -213,6 +252,34 @@ export const StructureVisualizationPanel: React.FC = () => {
               }
             />
           ))}
+
+          {/* Phase 6.2: Terminal NULL Badge for Linked Lists */}
+          {nullNodeRect && (
+            <g transform={`translate(${nullNodeRect.x}, ${nullNodeRect.y})`}>
+              <rect
+                x={0}
+                y={0}
+                width={nullNodeRect.w}
+                height={nullNodeRect.h}
+                rx={4}
+                fill="var(--color-surface-raised)"
+                stroke="var(--color-border)"
+                strokeWidth={1}
+                strokeDasharray="3 2"
+              />
+              <text
+                x={nullNodeRect.w / 2}
+                y={nullNodeRect.h / 2 + 4}
+                fill="var(--color-fg-muted)"
+                fontSize="11"
+                fontWeight="600"
+                fontFamily="var(--font-mono)"
+                textAnchor="middle"
+              >
+                NULL
+              </text>
+            </g>
+          )}
         </StructureCanvas>
 
         {/* Generalized Detail Sidebar */}

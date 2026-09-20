@@ -22,6 +22,7 @@ export const StructureControls: React.FC<StructureControlsProps> = ({
   const filterOptions: { id: StructureFilterOption; label: string }[] = [
     { id: "all", label: "All Structures" },
     { id: "array", label: "Arrays" },
+    { id: "linked-list", label: "Linked Lists" },
     { id: "pointer-graph", label: "Pointers" },
   ];
 

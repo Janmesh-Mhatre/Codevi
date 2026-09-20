@@ -21,6 +21,7 @@ import {
   type CPointerType,
   type CPointerValue,
   type CScalarValue,
+  type CStructPointee,
   type CType,
   type CValue,
 } from "./values";
@@ -35,6 +36,8 @@ import {
   type InterpreterStep,
   type RuntimeFrame,
   type StackFrameSnapshot,
+  type StructDefinition,
+  type StructFieldDefinition,
 } from "./types";
 import {
   extractStringLiteralText,
@@ -45,6 +48,14 @@ import {
 } from "../stdlib/stdio";
 
 const MAX_CALL_DEPTH = 200;
+
+/** Phase 6.2: module-level struct definitions set at program start.
+ * Since struct definitions are immutable after collection, and
+ * callFunction creates fresh root scopes, this global avoids threading
+ * structDefs through every generator signature in the interpreter. */
+let globalStructDefs: Map<string, StructDefinition> = new Map();
+/** Global scope containing top-level variables and struct definitions. */
+let currentGlobalScope: Scope | null = null;
 
 type StatementResult = { kind: "normal" } | { kind: "return"; value: CValue | undefined };
 const NORMAL: StatementResult = { kind: "normal" };
@@ -138,8 +149,10 @@ function resolveDeclarator(node: SyntaxNode, baseType: CType): ResolvedDeclarato
   return null;
 }
 
-function defaultForResolvedType(type: CType | CPointerType): CValue {
-  return typeof type === "string" ? defaultValueForType(type) : defaultPointerValue(type.pointee);
+function defaultForResolvedType(type: CType | CPointerType | CStructPointee): CValue {
+  if (typeof type === "string") return defaultValueForType(type);
+  if (type.kind === "struct") return scalar("int", 0); // struct variables aren't first-class values; placeholder
+  return defaultPointerValue(type.pointee);
 }
 
 function formatValue(value: CValue): string {
@@ -160,30 +173,253 @@ function namedChildren(node: SyntaxNode): SyntaxNode[] {
   return node.namedChildren.filter((child): child is SyntaxNode => child !== null);
 }
 
-function functionNameOf(fnNode: SyntaxNode): string | null {
-  const declarator = fnNode.childForFieldName("declarator");
-  return declarator?.childForFieldName("declarator")?.text ?? null;
+interface UnwrappedFunctionDeclarator {
+  name: string | null;
+  paramListNode: SyntaxNode | null;
+  isPointer: boolean;
+  pointerDepth: number;
 }
 
-/** Collects every top-level function_definition into a name→node map.
- * Anything else at the top level (a #include, a comment, a global
- * variable declaration) is silently skipped rather than treated as an
- * error — see docs/PHASE_3_EXECUTION.md → "Supported C constructs" for
- * why globals specifically aren't supported yet. */
-function collectFunctions(rootNode: SyntaxNode): Map<string, SyntaxNode> {
+/** Unwraps pointer_declarator, parenthesized_declarator, and function_declarator
+ * to extract the function's identifier, its parameter list, and pointer return depth. */
+function unwrapFunctionDeclarator(node: SyntaxNode | null): UnwrappedFunctionDeclarator {
+  if (!node) return { name: null, paramListNode: null, isPointer: false, pointerDepth: 0 };
+  let curr: SyntaxNode = node;
+  let isPointer = false;
+  let pointerDepth = 0;
+
+  while (curr) {
+    if (curr.type === "function_declarator") {
+      const innerDecl = curr.childForFieldName("declarator");
+      const paramList = curr.childForFieldName("parameters");
+      let name: string | null = null;
+      if (innerDecl) {
+        if (innerDecl.type === "identifier") {
+          name = innerDecl.text;
+        } else {
+          const innerUnwrapped = unwrapFunctionDeclarator(innerDecl);
+          name = innerUnwrapped.name;
+          if (innerUnwrapped.isPointer) {
+            isPointer = true;
+            pointerDepth += innerUnwrapped.pointerDepth;
+          }
+        }
+      }
+      return {
+        name,
+        paramListNode: paramList,
+        isPointer,
+        pointerDepth,
+      };
+    }
+    if (curr.type === "pointer_declarator") {
+      isPointer = true;
+      pointerDepth++;
+      const next = curr.childForFieldName("declarator");
+      if (!next) break;
+      curr = next;
+    } else if (curr.type === "parenthesized_declarator") {
+      const next = curr.namedChildren[0];
+      if (!next) break;
+      curr = next;
+    } else if (curr.type === "identifier") {
+      return { name: curr.text, paramListNode: null, isPointer, pointerDepth };
+    } else {
+      break;
+    }
+  }
+  return { name: null, paramListNode: null, isPointer, pointerDepth };
+}
+
+function parseFunctionReturnType(
+  fnNode: SyntaxNode,
+  pointerDepth: number,
+): CType | CPointerType | CStructPointee | "void" {
+  const typeNode = fnNode.childForFieldName("type");
+  const typeText = typeNode?.text;
+  if (typeText === "void" && pointerDepth === 0) return "void";
+
+  let baseType: CType | CStructPointee;
+  if (typeNode?.type === "struct_specifier") {
+    const structName = typeNode.childForFieldName("name")?.text ?? "unknown";
+    baseType = { kind: "struct", name: structName };
+  } else {
+    baseType = mapPrimitiveType(typeText);
+  }
+
+  if (pointerDepth > 0) {
+    let result: CPointerType = { kind: "pointer", pointee: baseType };
+    for (let i = 1; i < pointerDepth; i++) {
+      result = { kind: "pointer", pointee: result };
+    }
+    return result;
+  }
+  return baseType;
+}
+
+function functionNameOf(fnNode: SyntaxNode): string | null {
+  const declarator = fnNode.childForFieldName("declarator");
+  return unwrapFunctionDeclarator(declarator).name;
+}
+
+/** Collects every top-level function_definition into a name→node map,
+ * top-level struct definitions, and top-level variable declarations. */
+function collectFunctions(rootNode: SyntaxNode): {
+  functions: Map<string, SyntaxNode>;
+  structDefs: Map<string, StructDefinition>;
+  globalDeclarations: SyntaxNode[];
+} {
   const functions = new Map<string, SyntaxNode>();
+  const structDefs = new Map<string, StructDefinition>();
+  const globalDeclarations: SyntaxNode[] = [];
+
   for (const child of namedChildren(rootNode)) {
     if (child.type === "function_definition") {
       const name = functionNameOf(child);
       if (name) functions.set(name, child);
     }
+    if (child.type === "type_definition") {
+      const structSpec = findStructSpecifier(child);
+      if (structSpec) {
+        const def = parseStructDefinition(structSpec, structDefs);
+        if (def) structDefs.set(def.name, def);
+      }
+    }
+    if (child.type === "declaration") {
+      const structSpec = findStructSpecifier(child);
+      if (structSpec) {
+        const def = parseStructDefinition(structSpec, structDefs);
+        if (def) structDefs.set(def.name, def);
+      }
+      const hasVariableDeclarator = namedChildren(child).some((c) =>
+        c.type === "init_declarator" ||
+        c.type === "identifier" ||
+        c.type === "pointer_declarator" ||
+        c.type === "array_declarator"
+      );
+      if (hasVariableDeclarator) {
+        globalDeclarations.push(child);
+      }
+    }
+    if (child.type === "struct_specifier") {
+      const def = parseStructDefinition(child, structDefs);
+      if (def) structDefs.set(def.name, def);
+    }
   }
-  return functions;
+  return { functions, structDefs, globalDeclarations };
+}
+
+/** Phase 6.2: finds a struct_specifier with a field_declaration_list
+ * inside a declaration or type_definition node. */
+function findStructSpecifier(node: SyntaxNode): SyntaxNode | null {
+  for (const child of namedChildren(node)) {
+    if (child.type === "struct_specifier" && child.childForFieldName("body")) {
+      return child;
+    }
+  }
+  return null;
+}
+
+/** Phase 6.2: parses a struct_specifier AST node into a StructDefinition.
+ * Handles self-referential pointers (e.g. `struct Node *next`) by
+ * looking up the struct name in `knownStructs` — the struct is
+ * pre-registered by name before its fields are resolved so that
+ * self-references don't cause infinite recursion. */
+function parseStructDefinition(
+  structSpec: SyntaxNode,
+  knownStructs: Map<string, StructDefinition>,
+): StructDefinition | null {
+  const nameNode = structSpec.childForFieldName("name");
+  if (!nameNode) return null;
+  const structName = nameNode.text;
+
+  const bodyNode = structSpec.childForFieldName("body");
+  if (!bodyNode) return null; // forward declaration only, no body
+
+  // Pre-register a placeholder so self-referential fields resolve
+  const placeholder: StructDefinition = { name: structName, fields: [], slotCount: 0, byteSize: 0 };
+  knownStructs.set(structName, placeholder);
+
+  const fields: StructFieldDefinition[] = [];
+  let slotOffset = 0;
+  let totalByteSize = 0;
+
+  for (const fieldDecl of namedChildren(bodyNode)) {
+    if (fieldDecl.type !== "field_declaration") continue;
+    const fieldTypeNode = fieldDecl.childForFieldName("type");
+    if (!fieldTypeNode) continue;
+
+    // Determine the field's type
+    let fieldType: CType | CPointerType | CStructPointee;
+    let fieldByteSize: number;
+
+    // Check for pointer declarator — e.g. `struct Node *next` or `int *ptr`
+    const fieldDeclaratorNode = fieldDecl.childForFieldName("declarator");
+    if (!fieldDeclaratorNode) continue;
+
+    let fieldName: string;
+    let isPointerField = false;
+
+    if (fieldDeclaratorNode.type === "pointer_declarator") {
+      isPointerField = true;
+      const innerDecl = fieldDeclaratorNode.childForFieldName("declarator");
+      fieldName = innerDecl?.text ?? fieldDeclaratorNode.text.replace(/^\*+/, "");
+    } else if (fieldDeclaratorNode.type === "field_identifier") {
+      fieldName = fieldDeclaratorNode.text;
+    } else {
+      fieldName = fieldDeclaratorNode.text;
+    }
+
+    if (fieldTypeNode.type === "struct_specifier") {
+      const refName = fieldTypeNode.childForFieldName("name")?.text;
+      if (refName) {
+        if (isPointerField) {
+          fieldType = { kind: "pointer", pointee: { kind: "struct", name: refName } };
+          fieldByteSize = 4; // pointer size
+        } else {
+          // Struct-by-value field (not yet fully supported, but define it)
+          fieldType = { kind: "struct", name: refName };
+          const refDef = knownStructs.get(refName);
+          fieldByteSize = refDef?.byteSize ?? 4;
+        }
+      } else {
+        continue; // unnamed struct type in field — skip
+      }
+    } else {
+      const baseType = mapPrimitiveType(fieldTypeNode.text);
+      if (isPointerField) {
+        fieldType = { kind: "pointer", pointee: baseType };
+        fieldByteSize = 4; // pointer size
+      } else {
+        fieldType = baseType;
+        fieldByteSize = sizeOfType(baseType);
+      }
+    }
+
+    fields.push({
+      name: fieldName,
+      type: fieldType,
+      slotOffset,
+      byteSize: fieldByteSize,
+    });
+    slotOffset++;
+    totalByteSize += fieldByteSize;
+  }
+
+  const def: StructDefinition = {
+    name: structName,
+    fields,
+    slotCount: fields.length,
+    byteSize: totalByteSize,
+  };
+  // Update the placeholder in-place
+  Object.assign(placeholder, def);
+  return def;
 }
 
 function buildFrameSnapshot(frame: RuntimeFrame, callDepth: number): StackFrameSnapshot {
-  const merged = frame.currentScope.snapshot();
-  const addresses = frame.currentScope.snapshotAddresses();
+  const merged = frame.currentScope.snapshot(currentGlobalScope);
+  const addresses = frame.currentScope.snapshotAddresses(currentGlobalScope);
   const parameters: Record<string, CValue> = {};
   const locals: Record<string, CValue> = {};
   for (const [name, value] of Object.entries(merged)) {
@@ -212,6 +448,8 @@ function makeStep(
    * the step boundary for the next statement. */
   const stepAccesses = scope.memory.getStepAccesses();
   scope.memory.markStepStart();
+  const globals = currentGlobalScope ? currentGlobalScope.snapshot() : undefined;
+  const globalAddresses = currentGlobalScope ? currentGlobalScope.snapshotAddresses() : undefined;
   return {
     node,
     kind,
@@ -222,6 +460,8 @@ function makeStep(
     callStack: stack,
     memory: scope.memory,
     stepAccesses,
+    globals,
+    globalAddresses,
     ...extra,
   };
 }
@@ -402,9 +642,32 @@ function sizeofElementType(sizeofNode: SyntaxNode): CType {
   return mapPrimitiveType(typeName);
 }
 
+/** Phase 6.2: checks if a sizeof or type_descriptor node refers to a struct. */
+function sizeofStructName(node: SyntaxNode): string | null {
+  const typeDescriptor = node.type === "type_descriptor" ? node : node.childForFieldName("type");
+  if (!typeDescriptor) return null;
+  const typeChild = typeDescriptor.childForFieldName("type");
+  if (typeChild?.type === "struct_specifier") {
+    return typeChild.childForFieldName("name")?.text ?? null;
+  }
+  for (const child of namedChildren(typeDescriptor)) {
+    if (child.type === "struct_specifier") {
+      return child.childForFieldName("name")?.text ?? null;
+    }
+  }
+  return null;
+}
+
 function* evaluateSizeof(node: SyntaxNode, scope: Scope, functions: Map<string, SyntaxNode>, callStack: RuntimeFrame[]): Step<CValue> {
   const typeDescriptor = node.childForFieldName("type");
   if (typeDescriptor) {
+    // Phase 6.2: sizeof(struct Node)
+    const structName = sizeofStructName(node);
+    if (structName) {
+      const def = scope.lookupStruct(structName);
+      if (def) return scalar("int", def.byteSize);
+      throw new InterpreterError(`sizeof: unknown struct "${structName}"`, node);
+    }
     return scalar("int", sizeOfType(sizeofElementType(node)));
   }
   const valueNode = node.childForFieldName("value");
@@ -436,6 +699,27 @@ function* callMalloc(node: SyntaxNode, argNodes: SyntaxNode[], scope: Scope, fun
   if (sizeValue.value <= 0) {
     throw new InterpreterError(`malloc() requires a positive size (got ${sizeValue.value})`, argNodes[0]);
   }
+
+  // Phase 6.2: check if malloc argument is sizeof(struct ...)
+  const structName = sizeofStructName(argNodes[0]);
+  if (structName) {
+    const def = scope.lookupStruct(structName);
+    if (def) {
+      const address = scope.memory.allocateHeap(def.slotCount, 4, "malloc", defaultValueForType("int"));
+      for (const field of def.fields) {
+        const fieldDefault = typeof field.type === "string"
+          ? defaultValueForType(field.type)
+          : field.type.kind === "pointer"
+            ? defaultPointerValue(field.type.pointee)
+            : defaultValueForType("int");
+        scope.memory.write({ ...address, slot: field.slotOffset }, fieldDefault);
+      }
+      yield makeStep(node, "statement", callStack, scope, `malloc: allocated ${def.byteSize} bytes at ${formatAddress(address)}`);
+      const structPtr: CStructPointee = { kind: "struct", name: structName };
+      return pointerValue(structPtr, address);
+    }
+  }
+
   const { slotCount, elementType } = inferAllocationShape(argNodes[0], sizeValue.value);
   let address: Address;
   try {
@@ -622,20 +906,34 @@ function pointerArithmetic(pointer: CPointerValue, offset: number, scope: Scope,
 // ---------------------------------------------------------------------
 
 export function* interpretProgram(rootNode: SyntaxNode): Step<CValue | undefined> {
-  const functions = collectFunctions(rootNode);
+  const { functions, structDefs, globalDeclarations } = collectFunctions(rootNode);
+  globalStructDefs = structDefs;
   const mainFn = functions.get("main");
   if (!mainFn) {
     throw new InterpreterError('No "main" function found', rootNode);
   }
   const memory = new MemoryModel();
-  const result = yield* callFunction(mainFn, [], functions, [], memory);
+  const globalScope = new Scope(null, memory);
+  currentGlobalScope = globalScope;
+
+  for (const [structName, def] of structDefs) {
+    globalScope.defineStruct(structName, def);
+  }
+
+  // Execute top-level global variable declarations in globalScope
+  for (const declNode of globalDeclarations) {
+    yield makeStep(declNode, "statement", [], globalScope, truncate(declNode.text));
+    yield* executeDeclaration(declNode, globalScope, functions, []);
+  }
+
+  const result = yield* callFunction(mainFn, [], functions, [], memory, structDefs, globalScope);
   // Optional leak report (Phase 5 brief: "Memory leaks... at program
   // end, optional if feasible") — surfaced as part of the final step's
   // description rather than a thrown error, since a leak isn't a crash.
   const leaks = memory.allAllocations().filter((allocation) => allocation.active);
   if (leaks.length > 0) {
     const summary = leaks.map((leak) => formatAddress(leak.address)).join(", ");
-    yield makeStep(rootNode, "output", [], new Scope(null, memory), "", {
+    yield makeStep(rootNode, "output", [], globalScope, "", {
       output: `\n[${leaks.length} heap block(s) never freed: ${summary}]\n`,
     });
   }
@@ -648,23 +946,60 @@ function* callFunction(
   functions: Map<string, SyntaxNode>,
   callStack: RuntimeFrame[],
   memory: MemoryModel,
+  structDefs?: Map<string, StructDefinition>,
+  globalScope?: Scope | null,
 ): Step<CValue | undefined> {
   if (callStack.length >= MAX_CALL_DEPTH) {
     throw new InterpreterError(`Maximum call depth (${MAX_CALL_DEPTH}) exceeded — likely unbounded recursion`, fnNode);
   }
 
-  const name = functionNameOf(fnNode) ?? "?";
   const declarator = fnNode.childForFieldName("declarator");
-  const paramListNode = declarator?.childForFieldName("parameters");
-  const returnType = mapPrimitiveType(fnNode.childForFieldName("type")?.text);
+  const unwrapped = unwrapFunctionDeclarator(declarator);
+  const name = unwrapped.name ?? functionNameOf(fnNode) ?? "?";
+  const paramListNode = unwrapped.paramListNode;
+  const returnType = parseFunctionReturnType(fnNode, unwrapped.pointerDepth);
 
-  const scope = new Scope(null, memory);
-  const paramNodes = paramListNode ? namedChildren(paramListNode).filter((n) => n.type === "parameter_declaration") : [];
-  const resolvedParams = paramNodes.map((paramNode) => {
-    const baseType = mapPrimitiveType(paramNode.childForFieldName("type")?.text);
+  const parentScope = globalScope ?? currentGlobalScope;
+  const scope = new Scope(parentScope, memory);
+  // Phase 6.2: propagate struct definitions into the function's scope
+  if (structDefs) {
+    for (const [structName, def] of structDefs) {
+      scope.defineStruct(structName, def);
+    }
+  }
+  const paramNodes = paramListNode
+    ? namedChildren(paramListNode).filter((n) => n.type === "parameter_declaration")
+    : [];
+  const activeParamNodes = paramNodes.filter((p) => p.text.trim() !== "void");
+
+  const resolvedParams = activeParamNodes.map((paramNode) => {
+    const typeNode = paramNode.childForFieldName("type");
+    // Phase 6.2: struct pointer parameters — `struct Node *head`
+    if (typeNode?.type === "struct_specifier") {
+      const structName = typeNode.childForFieldName("name")?.text;
+      const declaratorNode = paramNode.childForFieldName("declarator");
+      if (structName && declaratorNode) {
+        if (declaratorNode.type === "pointer_declarator") {
+          const inner = declaratorNode.childForFieldName("declarator");
+          const paramName = inner?.text ?? declaratorNode.text.replace(/^\*+/, "");
+          return { name: paramName, type: { kind: "pointer" as const, pointee: { kind: "struct" as const, name: structName } } };
+        }
+        return { name: declaratorNode.text, type: { kind: "struct" as const, name: structName } as CStructPointee };
+      }
+      return null;
+    }
+    const baseType = mapPrimitiveType(typeNode?.text);
     const declaratorNode = paramNode.childForFieldName("declarator");
     return declaratorNode ? resolveDeclarator(declaratorNode, baseType) : null;
   });
+
+  if (args.length !== resolvedParams.length) {
+    throw new InterpreterError(
+      `Function "${name}" expects ${resolvedParams.length} argument(s) but got ${args.length}`,
+      fnNode,
+    );
+  }
+
   const parameterNames = resolvedParams.map((p) => p?.name).filter((n): n is string => !!n);
 
   const frame: RuntimeFrame = { functionName: name, scope, parameterNames, currentNode: fnNode, currentScope: scope };
@@ -672,7 +1007,12 @@ function* callFunction(
 
   resolvedParams.forEach((resolved, index) => {
     if (!resolved) return;
-    scope.declare(resolved.name, args[index] ?? defaultForResolvedType(resolved.type));
+    const argVal = args[index];
+    if (argVal && isPointer(argVal) && typeof resolved.type !== "string" && resolved.type.kind === "pointer") {
+      scope.declare(resolved.name, pointerValue(resolved.type.pointee, argVal.target));
+    } else {
+      scope.declare(resolved.name, argVal ?? defaultForResolvedType(resolved.type));
+    }
   });
 
   yield makeStep(fnNode, "call-enter", callStack, scope, `Entering function "${name}"`);
@@ -708,7 +1048,16 @@ function* callFunction(
   );
 
   callStack.pop();
-  return returnValue ?? (returnType ? defaultValueForType(returnType) : undefined);
+  if (returnValue !== undefined) {
+    if (isPointer(returnValue) && typeof returnType !== "string" && returnType.kind === "pointer") {
+      return pointerValue(returnType.pointee, returnValue.target);
+    }
+    return returnValue;
+  }
+  if (returnType === "void") return undefined;
+  if (typeof returnType === "string") return defaultValueForType(returnType);
+  if (returnType.kind === "pointer") return defaultPointerValue(returnType.pointee);
+  return undefined;
 }
 
 function* executeBlock(
@@ -965,6 +1314,25 @@ function* executeDeclaration(
   callStack: RuntimeFrame[],
 ): Step<void> {
   const typeNode = node.childForFieldName("type");
+
+  // Phase 6.2: struct definition inside a function body — e.g.
+  // `struct Node { int data; struct Node *next; };`
+  if (typeNode?.type === "struct_specifier" && typeNode.childForFieldName("body")) {
+    const existingDefs = new Map<string, StructDefinition>();
+    // Collect any already-known struct defs from scope
+    // (lookupStruct searches parent scopes, but we need a mutable map for parseStructDefinition)
+    const def = parseStructDefinition(typeNode, existingDefs);
+    if (def) {
+      scope.defineStruct(def.name, def);
+    }
+    // If this is a bare struct definition (no variable declared), we're done
+    const nonTypeChildren = namedChildren(node).filter((c) => c.id !== typeNode.id);
+    if (nonTypeChildren.length === 0) return;
+  }
+
+  // Phase 6.2: check if the type is a struct reference (without body)
+  const isStructType = typeNode?.type === "struct_specifier";
+  const structName = isStructType ? typeNode?.childForFieldName("name")?.text : undefined;
   const baseType = mapPrimitiveType(typeNode?.text);
 
   // Collect all declarator nodes (handles multi-variable declarations like int x = 2, y = 0;)
@@ -981,6 +1349,47 @@ function* executeDeclaration(
       const innerDeclarator = declarator.childForFieldName("declarator");
       const valueNode = declarator.childForFieldName("value");
       if (!innerDeclarator) unsupported(declarator, "missing variable name");
+      // Phase 6.2: struct pointer declaration — `struct Node *head = ...`
+      if (isStructType && structName) {
+        if (innerDeclarator.type === "pointer_declarator") {
+          const inner = innerDeclarator.childForFieldName("declarator");
+          const varName = inner?.text ?? innerDeclarator.text.replace(/^\*+/, "");
+          const structPointee: CStructPointee = { kind: "struct", name: structName };
+          const value = valueNode
+            ? yield* evaluate(valueNode, scope, functions, callStack)
+            : defaultPointerValue(structPointee);
+          const finalValue = isPointer(value) ? pointerValue(structPointee, value.target) : value;
+          scope.declare(varName, finalValue);
+          if (finalValue.kind === "pointer") scope.memory.recordPointerAssign(varName, finalValue.target);
+          continue;
+        }
+        // Phase 6.2: struct variable declaration — `struct Node n`
+        if (innerDeclarator.type === "identifier") {
+          const varName = innerDeclarator.text;
+          const structDef = scope.lookupStruct(structName);
+          if (!structDef) throw new InterpreterError(`Unknown struct type "struct ${structName}"`, node);
+          // Allocate contiguous slots for struct fields on the stack
+          const baseAddress = scope.memory.allocateStackArray(
+            varName,
+            structDef.slotCount,
+            defaultValueForType("int"),
+          );
+          // Initialize each field with its default value
+          for (const field of structDef.fields) {
+            const fieldDefault = typeof field.type === "string"
+              ? defaultValueForType(field.type)
+              : field.type.kind === "pointer"
+                ? defaultPointerValue(field.type.pointee)
+                : defaultValueForType("int");
+            scope.memory.write({ ...baseAddress, slot: field.slotOffset }, fieldDefault);
+          }
+          // Store as a pointer to the struct (struct variables are addressable)
+          const structPtr: CStructPointee = { kind: "struct", name: structName };
+          scope.declare(varName, pointerValue(structPtr, baseAddress));
+          continue;
+        }
+      }
+
       const resolved = resolveDeclarator(innerDeclarator, baseType);
       if (!resolved) {
         unsupported(innerDeclarator, "only simple variables, pointers, and arrays are supported (no function pointers)");
@@ -1030,6 +1439,39 @@ function* executeDeclaration(
       scope.declare(resolved.name, value);
       if (value.kind === "pointer") scope.memory.recordPointerAssign(resolved.name, value.target);
     } else {
+      // Phase 6.2: uninitialized struct pointer — `struct Node *p;`
+      if (isStructType && structName) {
+        if (declarator.type === "pointer_declarator") {
+          const inner = declarator.childForFieldName("declarator");
+          const varName = inner?.text ?? declarator.text.replace(/^\*+/, "");
+          const structPointee: CStructPointee = { kind: "struct", name: structName };
+          scope.declare(varName, defaultPointerValue(structPointee));
+          continue;
+        }
+        // Uninitialized struct variable — `struct Node n;`
+        if (declarator.type === "identifier") {
+          const varName = declarator.text;
+          const structDef = scope.lookupStruct(structName);
+          if (!structDef) throw new InterpreterError(`Unknown struct type "struct ${structName}"`, node);
+          const baseAddress = scope.memory.allocateStackArray(
+            varName,
+            structDef.slotCount,
+            defaultValueForType("int"),
+          );
+          for (const field of structDef.fields) {
+            const fieldDefault = typeof field.type === "string"
+              ? defaultValueForType(field.type)
+              : field.type.kind === "pointer"
+                ? defaultPointerValue(field.type.pointee)
+                : defaultValueForType("int");
+            scope.memory.write({ ...baseAddress, slot: field.slotOffset }, fieldDefault);
+          }
+          const structPtr: CStructPointee = { kind: "struct", name: structName };
+          scope.declare(varName, pointerValue(structPtr, baseAddress));
+          continue;
+        }
+      }
+
       const resolved = resolveDeclarator(declarator, baseType);
       if (!resolved) {
         unsupported(declarator, "only simple variables, pointers, and arrays are supported (no function pointers)");
@@ -1304,14 +1746,37 @@ function* evaluate(node: SyntaxNode, scope: Scope, functions: Map<string, Syntax
         return right;
       }
 
+      // Phase 6.2: field_expression assignment — `n.data = 42` or `head->data = 10`
+      if (leftNode.type === "field_expression") {
+        const fieldAddr = yield* resolveFieldAddress(leftNode, scope, functions, callStack);
+        const right = yield* evaluate(rightNode, scope, functions, callStack);
+        const existingVal = scope.memory.read(fieldAddr);
+        let newValue: CValue;
+        if (operator === "=") {
+          if (isPointer(existingVal) && isPointer(right)) {
+            newValue = pointerValue(existingVal.pointerType.pointee, right.target);
+          } else {
+            newValue = right;
+          }
+        } else {
+          newValue = applyBinaryOp(operator.slice(0, -1), existingVal as CScalarValue, right as CScalarValue);
+        }
+        scope.memory.write(fieldAddr, newValue);
+        return newValue;
+      }
+
       if (leftNode.type !== "identifier") {
-        unsupported(leftNode, "only assignment to simple variables, *pointer, or arr[i] is supported");
+        unsupported(leftNode, "only assignment to simple variables, *pointer, arr[i], or struct fields is supported");
       }
       const right = yield* evaluate(rightNode, scope, functions, callStack);
       const current = scope.lookup(leftNode.text);
       let newValue: CValue;
       if (operator === "=") {
-        newValue = right;
+        if (current && isPointer(current) && isPointer(right)) {
+          newValue = pointerValue(current.pointerType.pointee, right.target);
+        } else {
+          newValue = right;
+        }
       } else if (current && isPointer(current)) {
         // Phase 5.2: pointer compound assignment — only += and -= are valid.
         if (operator === "+=" || operator === "-=") {
@@ -1329,6 +1794,19 @@ function* evaluate(node: SyntaxNode, scope: Scope, functions: Map<string, Syntax
       scope.assign(leftNode.text, newValue);
       if (newValue.kind === "pointer") scope.memory.recordPointerAssign(leftNode.text, newValue.target);
       return newValue;
+    }
+
+    case "cast_expression": {
+      const typeNode = node.childForFieldName("type");
+      const valueNode = node.childForFieldName("value");
+      const value = yield* evaluate(valueNode ?? namedChildren(node)[1]!, scope, functions, callStack);
+      if (typeNode && isPointer(value)) {
+        const structName = sizeofStructName(typeNode);
+        if (structName) {
+          return pointerValue({ kind: "struct", name: structName }, value.target);
+        }
+      }
+      return value;
     }
 
     case "call_expression": {
@@ -1352,13 +1830,13 @@ function* evaluate(node: SyntaxNode, scope: Scope, functions: Map<string, Syntax
         if (isKnownLibraryFunction(name)) {
           unsupported(node, `calls to library functions like "${name}" aren't supported yet — Codevi covers user-defined functions, core control flow, basic stdio, and malloc/calloc/realloc/free only`);
         }
-        unsupported(node, `no function named "${name}" is defined`);
+        throw new InterpreterError(`Undefined function: no function named "${name}" is defined`, node);
       }
       const args: CValue[] = [];
       for (const argNode of argNodes) {
         args.push(yield* evaluate(argNode, scope, functions, callStack));
       }
-      const result = yield* callFunction(fn, args, functions, callStack, scope.memory);
+      const result = yield* callFunction(fn, args, functions, callStack, scope.memory, globalStructDefs, currentGlobalScope);
       return result ?? scalar("int", 0);
     }
 
@@ -1388,10 +1866,91 @@ function* evaluate(node: SyntaxNode, scope: Scope, functions: Map<string, Syntax
       return dereference(target, scope, node);
     }
 
+    // Phase 6.2: field_expression — `n.data` or `head->data`
+    case "field_expression": {
+      const fieldAddr = yield* resolveFieldAddress(node, scope, functions, callStack);
+      return scope.memory.read(fieldAddr);
+    }
+
     case "string_literal":
       unsupported(node, "strings aren't supported as general values yet — Codevi doesn't model character arrays (string literals do work as direct arguments to printf/puts)");
 
     default:
       unsupported(node);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6.2: struct field access resolution
+// ---------------------------------------------------------------------------
+
+/** Resolves a `field_expression` AST node (`.` or `->` access) to the
+ * memory Address of the target field. Used by both evaluate (reads)
+ * and assignment_expression (writes). */
+function* resolveFieldAddress(
+  node: SyntaxNode,
+  scope: Scope,
+  functions: Map<string, SyntaxNode>,
+  callStack: RuntimeFrame[],
+): Step<Address> {
+  const argumentNode = node.childForFieldName("argument")!;
+  const fieldNode = node.childForFieldName("field")!;
+  const fieldName = fieldNode.text;
+
+  // Determine if it's `.` or `->`
+  // Tree-sitter-c uses `.` or `->` as the operator between argument and field
+  const nodeText = node.text;
+  const isArrow = nodeText.includes("->");
+
+  const baseValue = yield* evaluate(argumentNode, scope, functions, callStack);
+
+  if (!isPointer(baseValue)) {
+    throw new InterpreterError(
+      `Field access requires a struct pointer (got ${baseValue.kind})`,
+      node,
+    );
+  }
+
+  let baseAddress: Address;
+  if (isArrow) {
+    // `ptr->field` — dereference the pointer first
+    if (baseValue.target === null) {
+      throw new InterpreterError("Null pointer dereference in field access (->)", node);
+    }
+    if (baseValue.target.space === "heap" && !scope.memory.isActiveHeapBlock(baseValue.target)) {
+      throw new InterpreterError(
+        `Use after free: ${formatAddress(baseValue.target)} was already freed`,
+        node,
+      );
+    }
+    baseAddress = { space: baseValue.target.space, id: baseValue.target.id, slot: 0 };
+  } else {
+    // `var.field` — the variable itself is a pointer to the struct storage
+    if (baseValue.target === null) {
+      throw new InterpreterError("Invalid struct access (null)", node);
+    }
+    baseAddress = { space: baseValue.target.space, id: baseValue.target.id, slot: 0 };
+  }
+
+  // Look up the struct definition to find the field's slot offset
+  const pointee = baseValue.pointerType.pointee;
+  if (typeof pointee === "string" || pointee.kind !== "struct") {
+    throw new InterpreterError(
+      `Field access operator requires a struct pointer, not ${formatPointerType(baseValue.pointerType)}`,
+      node,
+    );
+  }
+  const structDef = scope.lookupStruct(pointee.name);
+  if (!structDef) {
+    throw new InterpreterError(`Unknown struct type "struct ${pointee.name}"`, node);
+  }
+  const field = structDef.fields.find((f) => f.name === fieldName);
+  if (!field) {
+    throw new InterpreterError(
+      `struct ${pointee.name} has no field named "${fieldName}"`,
+      node,
+    );
+  }
+
+  return { space: baseAddress.space, id: baseAddress.id, slot: field.slotOffset };
 }

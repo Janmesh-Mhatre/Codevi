@@ -79,27 +79,42 @@ export function layoutPointerGraph(
   // Route connections
   const placedLinks: PlacedLink[] = [];
   let stackToStackIndex = 0;
+  let heapToHeapIndex = 0;
 
   for (const link of links) {
-    const srcNode = stackNodes.find((n) => n.node.id === link.sourceNodeId);
+    const srcNode =
+      stackNodes.find((n) => n.node.id === link.sourceNodeId) ??
+      heapNodes.find((n) => n.node.id === link.sourceNodeId);
     if (!srcNode) continue;
 
-    const x1 = srcNode.x + srcNode.w;
-    const y1 = srcNode.y + srcNode.h / 2;
+    const isHeapSrc = link.sourceNodeId.startsWith("heap:");
+    let x1 = srcNode.x + srcNode.w;
+    let y1 = srcNode.y + srcNode.h / 2;
 
     let x2 = 0;
     let y2 = 0;
 
     if (link.status === "null") {
       if (nullNodeRect) {
-        x2 = nullNodeRect.x;
-        y2 = nullNodeRect.y + nullNodeRect.h / 2;
+        if (isHeapSrc) {
+          x1 = srcNode.x;
+          x2 = nullNodeRect.x + nullNodeRect.w;
+          y2 = nullNodeRect.y + nullNodeRect.h / 2;
+        } else {
+          x2 = nullNodeRect.x;
+          y2 = nullNodeRect.y + nullNodeRect.h / 2;
+        }
       }
     } else if (link.targetNodeId?.startsWith("heap:")) {
       const tgtNode = heapNodes.find((n) => n.node.id === link.targetNodeId);
       if (tgtNode) {
-        x2 = tgtNode.x;
-        y2 = tgtNode.y + tgtNode.h / 2;
+        if (isHeapSrc) {
+          x2 = tgtNode.x + tgtNode.w;
+          y2 = tgtNode.y + tgtNode.h / 2;
+        } else {
+          x2 = tgtNode.x;
+          y2 = tgtNode.y + tgtNode.h / 2;
+        }
       }
     } else if (link.targetNodeId) {
       const tgtNode = stackNodes.find((n) => n.node.id === link.targetNodeId);
@@ -114,8 +129,18 @@ export function layoutPointerGraph(
 
     if (x2 === 0 && y2 === 0 && link.status !== "null") continue;
 
-    const tierIdx = link.routingStyle === "outward-loop" ? stackToStackIndex++ : 0;
-    const pathD = routeConnector(x1, y1, x2, y2, link.routingStyle, tierIdx);
+    let pathD: string;
+    if (isHeapSrc && link.status === "null") {
+      const dx = Math.abs(x1 - x2);
+      const cp = Math.max(30, dx * 0.4);
+      pathD = `M ${x1} ${y1} C ${x1 - cp} ${y1}, ${x2 + cp} ${y2}, ${x2} ${y2}`;
+    } else {
+      const tierIdx =
+        link.routingStyle === "outward-loop"
+          ? (isHeapSrc ? heapToHeapIndex++ : stackToStackIndex++)
+          : 0;
+      pathD = routeConnector(x1, y1, x2, y2, link.routingStyle, tierIdx);
+    }
 
     placedLinks.push({
       link,
@@ -126,7 +151,7 @@ export function layoutPointerGraph(
     });
   }
 
-  const width = heapX + PG_HEAP_NODE_W + PG_PAD;
+  const width = heapX + PG_HEAP_NODE_W + PG_PAD + 60;
   const height = Math.max(
     stackY,
     heapY,

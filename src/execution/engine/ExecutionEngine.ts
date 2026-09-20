@@ -1,6 +1,6 @@
 import { interpretProgram } from "../../interpreter/interpreter";
 import { formatPointerType, type CValue } from "../../interpreter/values";
-import { formatAddress } from "../../memory/memory";
+import { formatAddress, type Address } from "../../memory/memory";
 import type { InputRequest, InputResumeValue, InterpreterStep, StackFrameSnapshot } from "../../interpreter/types";
 import type { MemoryModel } from "../../memory/memory";
 import { parseScanfValue, describeScanfSpecifier } from "../../stdlib/stdio";
@@ -106,10 +106,36 @@ function computePointerViewData(
   callStack: StackFrame[],
   heap: HeapBlock[],
   memory: MemoryModel,
+  globals?: Record<string, ExecutionValue>,
+  globalAddresses?: Record<string, Address>,
 ): PointerViewData {
   // Build a map: address-key → variable name for target resolution
   const addressToName = new Map<string, string>();
   const allVars: PointerViewVariable[] = [];
+
+  if (globals && globalAddresses) {
+    for (const [name, value] of Object.entries(globals)) {
+      const addr = globalAddresses[name];
+      if (addr) {
+        const addrKey = `${addr.space}:${addr.id}:${addr.slot}`;
+        addressToName.set(addrKey, name);
+
+        let displayValue = value;
+        if (value.kind === "array" && value.values.length === 0) {
+          const arrValues = memory.stackArraySlotValues(value.address);
+          displayValue = { ...value, values: arrValues.map((v) => toPlainValue(v, memory)) };
+        }
+
+        allVars.push({
+          name,
+          address: addr,
+          value: displayValue,
+          isArray: value.kind === "array",
+          arrayLength: value.kind === "array" ? value.length : undefined,
+        });
+      }
+    }
+  }
 
   for (const frame of callStack) {
     const vars = { ...frame.parameters, ...frame.locals };
@@ -147,12 +173,20 @@ function computePointerViewData(
 
   // Build relationships
   const relationships: PointerRelationship[] = [];
+  const varSources: Array<{ vars: Record<string, ExecutionValue>; addresses: Record<string, Address> }> = [];
+  if (globals && globalAddresses) {
+    varSources.push({ vars: globals, addresses: globalAddresses });
+  }
   for (const frame of callStack) {
-    const vars = { ...frame.parameters, ...frame.locals };
+    varSources.push({ vars: { ...frame.parameters, ...frame.locals }, addresses: frame.addresses });
+  }
+
+  for (const source of varSources) {
+    const vars = source.vars;
     for (const [name, value] of Object.entries(vars)) {
       if (value.kind !== "pointer") continue;
 
-      const pointerAddr = frame.addresses[name];
+      const pointerAddr = source.addresses[name];
       const targetAddr = value.target;
 
       if (targetAddr === null) {
@@ -209,6 +243,56 @@ function computePointerViewData(
     }
   }
 
+  // Phase 6.2: Scan active heap blocks for pointer fields (e.g. `next` pointer in linked list nodes)
+  for (const block of heap) {
+    if (!block.active) continue;
+    for (let slot = 0; slot < block.values.length; slot++) {
+      const val = block.values[slot];
+      if (val.kind !== "pointer") continue;
+
+      const pointerAddr: Address = { space: "heap", id: block.address.id, slot };
+      const targetAddr = val.target;
+      const pointerName = `${formatAddress(block.address)}->next`;
+
+      if (targetAddr === null) {
+        relationships.push({
+          pointerName,
+          pointerAddress: pointerAddr,
+          targetAddress: null,
+          targetName: null,
+          targetRegion: "none",
+          status: "null",
+          chainDepth: 1,
+        });
+        continue;
+      }
+
+      const targetKey = `${targetAddr.space}:${targetAddr.id}:${targetAddr.slot}`;
+      const baseKey = `${targetAddr.space}:${targetAddr.id}:0`;
+      let targetName = addressToName.get(targetKey) ?? addressToName.get(baseKey) ?? null;
+
+      let status: PointerRelationship["status"] = "valid";
+      if (targetAddr.space === "heap") {
+        const targetBlock = heap.find((b) => b.address.id === targetAddr.id);
+        if (!targetBlock) {
+          status = "invalid";
+        } else if (!targetBlock.active) {
+          status = "freed";
+        }
+      }
+
+      relationships.push({
+        pointerName,
+        pointerAddress: pointerAddr,
+        targetAddress: targetAddr,
+        targetName,
+        targetRegion: targetAddr.space,
+        status,
+        chainDepth: 1,
+      });
+    }
+  }
+
   // Compute chain depths for pointer-to-pointer visualization
   const nameToRelation = new Map(relationships.map((r) => [r.pointerName, r]));
   for (const rel of relationships) {
@@ -254,7 +338,15 @@ function toExecutionStep(step: InterpreterStep): ExecutionStep {
     variables: toPlainValues(step.variables, step.memory),
     callStack,
     heap,
-    pointerView: computePointerViewData(callStack, heap, step.memory),
+    globals: step.globals ? toPlainValues(step.globals, step.memory) : undefined,
+    globalAddresses: step.globalAddresses,
+    pointerView: computePointerViewData(
+      callStack,
+      heap,
+      step.memory,
+      step.globals ? toPlainValues(step.globals, step.memory) : undefined,
+      step.globalAddresses,
+    ),
     stepAccesses,
   };
 }

@@ -3,6 +3,40 @@ import type { Scope } from "./scope";
 import type { Address, MemoryModel } from "../memory/memory";
 import type { CValue } from "./values";
 import type { ScanfSpecifier } from "../stdlib/stdio";
+import type { CType, CPointerType, CStructPointee } from "./values";
+
+// ---------------------------------------------------------------------------
+// Phase 6.2: Struct type system — used by the interpreter to track struct
+// layouts and by the memory model for multi-slot, field-addressed allocations.
+// ---------------------------------------------------------------------------
+
+/** One field inside a struct definition. `slotOffset` is the field's
+ * index into the struct's contiguous slot array (e.g. `data` = slot 0,
+ * `next` = slot 1). `byteSize` uses Codevi's simulated size model
+ * (see sizeOfType in memory.ts). */
+export interface StructFieldDefinition {
+  name: string;
+  /** The field's C type — a primitive type, a pointer type, or a struct pointee. */
+  type: CType | CPointerType | CStructPointee;
+  /** Zero-based slot index within the struct's contiguous storage. */
+  slotOffset: number;
+  /** Codevi's simulated byte size for this field. */
+  byteSize: number;
+}
+
+/** A complete struct type definition (e.g. `struct Node { int data; struct Node *next; }`).
+ * Registered in Scope so that declarations of struct variables and
+ * `sizeof(struct Node)` can resolve the layout. */
+export interface StructDefinition {
+  /** The struct's tag name (e.g. `"Node"`). */
+  name: string;
+  /** Ordered field list — matches declaration order in the C source. */
+  fields: StructFieldDefinition[];
+  /** Total number of contiguous memory slots the struct occupies. */
+  slotCount: number;
+  /** Codevi's simulated total byte size (sum of field byte sizes). */
+  byteSize: number;
+}
 
 /**
  * A live entry on the interpreter's call stack (Phase 4). One of these
@@ -110,6 +144,10 @@ export interface InterpreterStep {
    * at makeStep time. Used by ExecutionEngine to populate
    * ExecutionStep.stepAccesses for the visualization layer. */
   stepAccesses: import("../memory/memory").MemoryEvent[];
+  /** Global variables snapshot active at this step. */
+  globals?: Record<string, CValue>;
+  /** Global variables storage addresses. */
+  globalAddresses?: Record<string, Address>;
 }
 
 /** Thrown for anything the interpreter genuinely cannot make sense of —
