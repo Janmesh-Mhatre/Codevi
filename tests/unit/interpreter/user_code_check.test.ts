@@ -142,4 +142,24 @@ describe("User code switch analysis & execution verification", () => {
     const output = outcome.history.filter((s) => s.kind === "output").map((s) => s.output).join("");
     expect(output).toBe("a=30\n");
   });
+
+  it("runs dummy hello codevi program", async () => {
+    const code = `
+      #include <stdio.h>
+
+      int main() {
+          printf("Hello, Codevi!");
+          return 0;
+      }
+    `;
+
+    const root = await parseC(code);
+    const outcome = runCollectingSteps(root);
+    expect(outcome.error).toBeUndefined();
+    expect(outcome.result).toEqual({ kind: "scalar", type: "int", value: 0 });
+
+    const output = outcome.history.filter((s) => s.kind === "output").map((s) => s.output).join("");
+    expect(output).toBe("Hello, Codevi!");
+  });
 });
+

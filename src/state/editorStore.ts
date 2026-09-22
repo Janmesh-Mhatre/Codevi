@@ -3,16 +3,12 @@ import type { SupportedLanguage } from "../types";
 
 const STARTER_SOURCE = `#include <stdio.h>
 
-int square(int n) {
-    return n * n;
-}
-
-int main(void) {
-    int value = 7;
-    printf("%d squared is %d\\n", value, square(value));
+int main() {
+    printf("Hello, Codevi!");
     return 0;
 }
 `;
+
 
 interface EditorState {
   code: string;
