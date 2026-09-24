@@ -227,6 +227,13 @@ export class MemoryModel {
     return this.cells.get(this.key(address))?.label ?? formatAddress(address);
   }
 
+  setLabel(address: Address, label: string): void {
+    const cell = this.cells.get(this.key(address));
+    if (cell) {
+      cell.label = label;
+    }
+  }
+
   /** Looks up the allocation a given address belongs to (any slot of it
    * resolves to the same block-level allocation record). */
   getAllocation(address: Address): HeapAllocation | undefined {

@@ -112,6 +112,8 @@ export interface PointerRelationship {
   status: "valid" | "null" | "freed" | "invalid";
   /** What pointer’s target this pointer is. 0 = top-level pointer. */
   chainDepth: number;
+  /** Name of the struct pointer field, e.g. "next", "prev", "left", "right" */
+  fieldName?: string;
 }
 
 /** Phase 6: all pointer-view data for one execution step. */

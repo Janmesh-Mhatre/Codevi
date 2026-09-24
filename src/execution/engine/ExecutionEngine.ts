@@ -5,6 +5,7 @@ import type { InputRequest, InputResumeValue, InterpreterStep, StackFrameSnapsho
 import type { MemoryModel } from "../../memory/memory";
 import { parseScanfValue, describeScanfSpecifier } from "../../stdlib/stdio";
 import { getCurrentTree, getLastDiagnostics } from "../../parser/parserService";
+import { orderHeapBlocks } from "../../visualization/connectors/connectorRouting";
 import { scope } from "../../utils/logger";
 import {
   INITIAL_EXECUTION_STATE,
@@ -252,7 +253,11 @@ function computePointerViewData(
 
       const pointerAddr: Address = { space: "heap", id: block.address.id, slot };
       const targetAddr = val.target;
-      const pointerName = `${formatAddress(block.address)}->next`;
+      const cell = memory.getCell(pointerAddr);
+      const fieldName = cell?.label && !cell.label.startsWith("heap block")
+        ? cell.label
+        : (slot === 1 ? "next" : slot === 2 ? "prev" : `field${slot}`);
+      const pointerName = `${formatAddress(block.address)}->${fieldName}`;
 
       if (targetAddr === null) {
         relationships.push({
@@ -263,6 +268,7 @@ function computePointerViewData(
           targetRegion: "none",
           status: "null",
           chainDepth: 1,
+          fieldName,
         });
         continue;
       }
@@ -289,20 +295,36 @@ function computePointerViewData(
         targetRegion: targetAddr.space,
         status,
         chainDepth: 1,
+        fieldName,
       });
     }
   }
 
-  // Compute chain depths for pointer-to-pointer visualization
-  const nameToRelation = new Map(relationships.map((r) => [r.pointerName, r]));
+  // Deduplicate identical relationships (same source + field + destination)
+  const uniqueRelationships: PointerRelationship[] = [];
+  const seenRelKeys = new Set<string>();
   for (const rel of relationships) {
+    const srcKey = rel.pointerAddress ? formatAddress(rel.pointerAddress) : rel.pointerName;
+    const fldKey = rel.fieldName ?? rel.pointerName;
+    const tgtKey = rel.targetAddress ? formatAddress(rel.targetAddress) : "null";
+    const key = `${srcKey}::${fldKey}::${tgtKey}`;
+    if (seenRelKeys.has(key)) continue;
+    seenRelKeys.add(key);
+    uniqueRelationships.push(rel);
+  }
+
+  // Compute chain depths for pointer-to-pointer visualization
+  const nameToRelation = new Map(uniqueRelationships.map((r) => [r.pointerName, r]));
+  for (const rel of uniqueRelationships) {
     if (rel.targetName && nameToRelation.has(rel.targetName)) {
       const inner = nameToRelation.get(rel.targetName)!;
       inner.chainDepth = Math.max(inner.chainDepth, rel.chainDepth + 1);
     }
   }
 
-  return { relationships, stackVariables: allVars, heapBlocks: heap };
+  const orderedHeap = orderHeapBlocks(heap, uniqueRelationships, allVars);
+
+  return { relationships: uniqueRelationships, stackVariables: allVars, heapBlocks: orderedHeap };
 }
 
 function toExecutionStep(step: InterpreterStep): ExecutionStep {

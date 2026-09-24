@@ -1,4 +1,5 @@
 import type { LinkStatus, RoutingStyle } from "../models/structureTypes";
+import type { HeapBlock, PointerRelationship, PointerViewVariable } from "../../execution/models/executionTypes";
 
 /**
  * Standard colors for link statuses across all data structure diagrams.
@@ -35,6 +36,236 @@ export function getMarkerId(status: LinkStatus): string {
     case "invalid":
       return "arrow-danger";
   }
+}
+
+/**
+ * Stable theme-aligned colors for pointer fields.
+ * The same field name always receives the same color.
+ */
+export function getFieldColor(fieldName?: string, status?: PointerRelationship["status"]): string {
+  if (status === "null") return "var(--color-fg-muted)";
+  if (status === "freed" || status === "invalid") return "var(--color-danger)";
+  if (!fieldName) return "var(--color-accent)";
+
+  const normalized = fieldName.toLowerCase();
+  switch (normalized) {
+    case "next":
+    case "left":
+    case "child":
+      return "var(--color-accent)"; // Cyan / blue from theme
+    case "prev":
+    case "right":
+      return "var(--color-active)"; // Amber / orange from theme
+    case "parent":
+    case "up":
+      return "#a78bfa"; // Soft violet
+    default: {
+      const PALETTE = [
+        "var(--color-accent)",
+        "var(--color-active)",
+        "#a78bfa",
+        "#34d399",
+        "#f472b6",
+        "#38bdf8",
+      ];
+      let hash = 0;
+      for (let i = 0; i < normalized.length; i++) {
+        hash = (hash * 31 + normalized.charCodeAt(i)) & 0xffffffff;
+      }
+      return PALETTE[Math.abs(hash) % PALETTE.length];
+    }
+  }
+}
+
+/**
+ * Maps a stroke color to its corresponding SVG marker ID in <defs>.
+ */
+export function getMarkerForColor(color: string): string {
+  if (color.includes("danger")) return "arrow-danger";
+  if (color.includes("muted")) return "arrow-null";
+  if (color.includes("active")) return "arrow-active";
+  if (color.includes("accent")) return "arrow-valid";
+  if (color.includes("a78bfa")) return "arrow-violet";
+  if (color.includes("34d399")) return "arrow-emerald";
+  if (color.includes("f472b6")) return "arrow-pink";
+  return "arrow-valid";
+}
+
+/**
+ * Orders heap blocks for Pointer View according to actual linked-list pointer relationships:
+ * - Priority 1: Linked-list traversal from head (or candidate root)
+ * - Priority 2: Other active heap blocks in simulated address order
+ * - Priority 3: Freed heap blocks in simulated address order at the bottom
+ */
+export function orderHeapBlocks(
+  heapBlocks: HeapBlock[],
+  relationships: PointerRelationship[],
+  stackVariables: PointerViewVariable[],
+): HeapBlock[] {
+  if (heapBlocks.length === 0) return [];
+
+  const blockMap = new Map<number, HeapBlock>();
+  for (const b of heapBlocks) {
+    blockMap.set(b.address.id, b);
+  }
+
+  const activeBlocks = heapBlocks.filter((b) => b.active);
+  const freedBlocks = heapBlocks.filter((b) => !b.active);
+
+  // Sort freed blocks by simulated address id ascending
+  freedBlocks.sort((a, b) => a.address.id - b.address.id);
+
+  if (activeBlocks.length === 0) {
+    return freedBlocks;
+  }
+
+  const activeIdSet = new Set(activeBlocks.map((b) => b.address.id));
+
+  // Build forward pointer map for active blocks:
+  // srcId -> (fieldName -> tgtId)
+  const forwardLinks = new Map<number, Map<string, number>>();
+  const inDegree = new Map<number, number>();
+  for (const b of activeBlocks) {
+    inDegree.set(b.address.id, 0);
+  }
+
+  for (const rel of relationships) {
+    if (rel.pointerAddress?.space === "heap" && rel.targetAddress?.space === "heap") {
+      const srcId = rel.pointerAddress.id;
+      const tgtId = rel.targetAddress.id;
+      if (activeIdSet.has(srcId) && activeIdSet.has(tgtId)) {
+        if (!forwardLinks.has(srcId)) {
+          forwardLinks.set(srcId, new Map());
+        }
+        const field = rel.fieldName ?? (rel.pointerName.includes("->") ? rel.pointerName.split("->")[1] : "next");
+        forwardLinks.get(srcId)!.set(field, tgtId);
+
+        if (field === "next" || field === "right" || field === "child") {
+          inDegree.set(tgtId, (inDegree.get(tgtId) ?? 0) + 1);
+        }
+      }
+    }
+  }
+
+  // Find head ID starting point:
+  let headId: number | null = null;
+  const preferredNames = ["head", "list", "first", "root"];
+
+  for (const v of stackVariables) {
+    const val = v.value;
+    if (val.kind === "pointer" && val.target?.space === "heap" && activeIdSet.has(val.target.id)) {
+      if (preferredNames.includes(v.name.toLowerCase())) {
+        headId = val.target.id;
+        break;
+      }
+    }
+  }
+
+  if (headId === null) {
+    for (const v of stackVariables) {
+      const val = v.value;
+      if (val.kind === "pointer" && val.target?.space === "heap" && activeIdSet.has(val.target.id)) {
+        if (inDegree.get(val.target.id) === 0) {
+          headId = val.target.id;
+          break;
+        }
+      }
+    }
+  }
+
+  if (headId === null) {
+    for (const v of stackVariables) {
+      const val = v.value;
+      if (val.kind === "pointer" && val.target?.space === "heap" && activeIdSet.has(val.target.id)) {
+        headId = val.target.id;
+        break;
+      }
+    }
+  }
+
+  if (headId === null) {
+    for (const b of activeBlocks) {
+      if (inDegree.get(b.address.id) === 0 && forwardLinks.has(b.address.id)) {
+        headId = b.address.id;
+        break;
+      }
+    }
+  }
+
+  if (headId === null) {
+    for (const b of activeBlocks) {
+      if (forwardLinks.has(b.address.id)) {
+        headId = b.address.id;
+        break;
+      }
+    }
+  }
+
+  const orderedActive: HeapBlock[] = [];
+  const visited = new Set<number>();
+
+  if (headId !== null && blockMap.has(headId)) {
+    let currId: number | null = headId;
+    while (currId !== null && blockMap.has(currId) && !visited.has(currId)) {
+      visited.add(currId);
+      orderedActive.push(blockMap.get(currId)!);
+
+      const fields = forwardLinks.get(currId);
+      if (fields) {
+        currId = fields.get("next") ?? fields.get("right") ?? fields.get("child") ?? null;
+      } else {
+        currId = null;
+      }
+    }
+  }
+
+  // Priority 2: Other active heap blocks in simulated address order
+  const remainingActive = activeBlocks.filter((b) => !visited.has(b.address.id));
+  remainingActive.sort((a, b) => a.address.id - b.address.id);
+
+  // Priority 3: Freed blocks at the bottom
+  return [...orderedActive, ...remainingActive, ...freedBlocks];
+}
+
+/**
+ * Equal-length curve for vertically adjacent forward heap cards (e.g. H001 -> H002).
+ */
+export function routeAdjacentHeap(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  laneOffset: number = 32,
+): string {
+  return `M ${x1} ${y1} C ${x1 + laneOffset} ${y1}, ${x2 + laneOffset} ${y2}, ${x2} ${y2}`;
+}
+
+/**
+ * Large outer route for circular closing edge looping back to the head/ancestor node (e.g. H005 -> H003).
+ * Arches outside all intermediate cards and connectors to completely avoid crossing card bodies.
+ */
+export function routeCircularClosing(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  outerOffset: number = 85,
+): string {
+  return `M ${x1} ${y1} C ${x1 + outerOffset} ${y1}, ${x2 + outerOffset} ${y2}, ${x2} ${y2}`;
+}
+
+/**
+ * Reverse lane route for reverse relationships (e.g. H002.prev -> H001).
+ * Uses a distinct lane so forward and backward edges never overlap.
+ */
+export function routeReverseHeap(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  laneOffset: number = 54,
+): string {
+  return `M ${x1} ${y1} C ${x1 + laneOffset} ${y1}, ${x2 + laneOffset} ${y2}, ${x2} ${y2}`;
 }
 
 /**

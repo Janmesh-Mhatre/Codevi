@@ -1,9 +1,19 @@
-import { useState } from "react";
+import { useState, Fragment } from "react";
 import { Crosshair, MousePointerClick } from "lucide-react";
 import { useExecutionStore } from "../../state/executionStore";
 import { formatAddress } from "../../memory/memory";
 import { formatExecutionValue } from "../../execution/utils/formatValue";
-import { routeBezier, routeOutwardLoop } from "../../visualization/connectors/connectorRouting";
+import {
+  routeBezier,
+  routeOutwardLoop,
+  routeSelfLoop,
+  routeAdjacentHeap,
+  routeCircularClosing,
+  routeReverseHeap,
+  getFieldColor,
+  getMarkerForColor,
+  orderHeapBlocks,
+} from "../../visualization/connectors/connectorRouting";
 import type { PointerRelationship, PointerViewVariable, HeapBlock, ExecutionValue } from "../../execution/models/executionTypes";
 
 /** Layout constants */
@@ -98,22 +108,30 @@ export function PointerViewPanel() {
     stackY += h + ROW_GAP;
   }
 
-  // Heap column: one node per block
+  // Heap column: order according to actual next pointers & traversal, followed by remaining active, then freed at bottom
+  const orderedBlocks = orderHeapBlocks(heapBlocks, relationships, stackVariables);
   const heapX = PAD + NODE_W + COL_GAP;
   const heapNodes: { x: number; y: number; w: number; h: number; b: HeapBlock }[] = [];
   let heapY = PAD + 20;
-  for (const b of heapBlocks) {
+  let freedDividerY: number | null = null;
+
+  for (const b of orderedBlocks) {
+    if (!b.active && freedDividerY === null && heapNodes.length > 0) {
+      heapY += 10;
+      freedDividerY = heapY;
+      heapY += 26;
+    }
     heapNodes.push({ x: heapX, y: heapY, w: HEAP_NODE_W, h: HEAP_NODE_H, b });
     heapY += HEAP_NODE_H + ROW_GAP;
   }
 
-  // NULL target (if any pointers are NULL)
+  // NULL target (if any pointers are NULL) — positioned at the centre of stack and heap
   const hasNull = relationships.some((r) => r.status === "null");
   const nullNodeX = PAD + NODE_W + COL_GAP / 2 - NULL_NODE_W / 2;
   const nullNodeY = Math.max(stackY, heapY) + 8;
 
-  // SVG dimensions: allow extra margin for outward loops on the heap side
-  const svgW = heapX + HEAP_NODE_W + PAD + 70;
+  // SVG dimensions: ensure generous width for outer circular routes and NULL marker
+  const svgW = heapX + HEAP_NODE_W + 150;
   const svgH = Math.max(stackY, heapY, hasNull ? nullNodeY + NULL_NODE_H + PAD : 0) + PAD + 30;
 
   // ------ ARROW COMPUTATION ------
@@ -128,11 +146,13 @@ export function PointerViewPanel() {
     label: string;
     stackIndex?: number;
     heapIndex?: number;
+    customPath?: string;
   };
   const arrows: Arrow[] = [];
   let stackArrowCount = 0;
   let heapArrowCount = 0;
   const seenConnectorKeys = new Set<string>();
+  const edgePairCounts = new Map<string, number>();
 
   for (const rel of relationships) {
     const isHeapSource = rel.pointerAddress?.space === "heap";
@@ -152,11 +172,14 @@ export function PointerViewPanel() {
 
     if (!srcStackNode && !srcHeapNode) continue;
 
+    const fieldName = rel.fieldName ?? (rel.pointerName.includes("->") ? rel.pointerName.split("->")[1] : "next");
+    const edgeColor = getFieldColor(fieldName, rel.status);
+
     if (srcHeapNode) {
       // --- HEAP-ORIGINATED POINTER (e.g. struct Node* next field) ---
       const srcKey = rel.pointerAddress ? formatAddress(rel.pointerAddress) : formatAddress(srcHeapNode.b.address);
       const tgtKey = rel.targetAddress ? formatAddress(rel.targetAddress) : "NULL";
-      const connKey = `${srcKey}:next:${tgtKey}`;
+      const connKey = `${srcKey}:${fieldName}:${tgtKey}`;
       if (seenConnectorKeys.has(connKey)) continue;
       seenConnectorKeys.add(connKey);
 
@@ -168,7 +191,7 @@ export function PointerViewPanel() {
           y1: srcHeapNode.y + 44,
           x2: nullNodeX + NULL_NODE_W,
           y2: nullNodeY + NULL_NODE_H / 2,
-          color: statusColor(rel.status),
+          color: edgeColor,
           dash: undefined,
           label: rel.pointerName,
         });
@@ -179,16 +202,55 @@ export function PointerViewPanel() {
       if (rel.targetRegion === "heap" && rel.targetAddress) {
         const tgtHeapNode = heapNodes.find((n) => n.b.address.id === rel.targetAddress!.id);
         if (tgtHeapNode) {
+          const srcIdx = heapNodes.indexOf(srcHeapNode);
+          const tgtIdx = heapNodes.indexOf(tgtHeapNode);
+          const diff = tgtIdx - srcIdx;
+
+          // Track multi-edge offset between identical node pairs
+          const pairKey = `${srcHeapNode.b.address.id}->${tgtHeapNode.b.address.id}`;
+          const pairCount = edgePairCounts.get(pairKey) ?? 0;
+          edgePairCounts.set(pairKey, pairCount + 1);
+          const extraOffset = pairCount * 22;
+
+          const y1 = srcHeapNode.y + (fieldName === "prev" ? 34 : 44);
+          const y2 = tgtHeapNode.y + (fieldName === "prev" ? 38 : 22);
+          const x1 = srcHeapNode.x + srcHeapNode.w;
+          const x2 = tgtHeapNode.x + tgtHeapNode.w;
+
+          let customPath: string;
+          if (diff === 0) {
+            // Self-loop
+            customPath = routeSelfLoop(x1, y1, heapArrowCount);
+          } else if (diff === 1) {
+            // Consecutive forward link: equal path length across all consecutive links
+            const lane = 30 + extraOffset;
+            customPath = routeAdjacentHeap(x1, y1, x2, y2, lane);
+          } else if (diff === -1) {
+            // Reverse link (e.g. prev): dedicated outer lane so forward and reverse never collide
+            const lane = 52 + extraOffset;
+            customPath = routeReverseHeap(x1, y1, x2, y2, lane);
+          } else if (diff < -1) {
+            // Circular closing edge: large outer loop bypassing all intermediate cards
+            const skipped = Math.abs(diff) - 1;
+            const outerOffset = 80 + Math.min(40, skipped * 12) + extraOffset;
+            customPath = routeCircularClosing(x1, y1, x2, y2, outerOffset);
+          } else {
+            // Forward link skipping intermediate nodes
+            const lane = 65 + extraOffset;
+            customPath = routeCircularClosing(x1, y1, x2, y2, lane);
+          }
+
           arrows.push({
             kind: "heap-to-heap",
-            x1: srcHeapNode.x + srcHeapNode.w,
-            y1: srcHeapNode.y + 44,
-            x2: tgtHeapNode.x + tgtHeapNode.w,
-            y2: tgtHeapNode.y + tgtHeapNode.h / 2,
-            color: statusColor(rel.status),
+            x1,
+            y1,
+            x2,
+            y2,
+            color: edgeColor,
             dash: statusDash(rel.status),
             label: rel.pointerName,
             heapIndex: heapArrowCount++,
+            customPath,
           });
           continue;
         }
@@ -278,11 +340,23 @@ export function PointerViewPanel() {
             <marker id="arrow-valid" viewBox="0 0 10 6" refX="9" refY="3" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
               <path d="M0,0 L10,3 L0,6 Z" fill="var(--color-accent)" />
             </marker>
+            <marker id="arrow-active" viewBox="0 0 10 6" refX="9" refY="3" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0,0 L10,3 L0,6 Z" fill="var(--color-active)" />
+            </marker>
             <marker id="arrow-null" viewBox="0 0 10 6" refX="9" refY="3" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
               <path d="M0,0 L10,3 L0,6 Z" fill="var(--color-fg-muted)" />
             </marker>
             <marker id="arrow-danger" viewBox="0 0 10 6" refX="9" refY="3" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
               <path d="M0,0 L10,3 L0,6 Z" fill="var(--color-danger)" />
+            </marker>
+            <marker id="arrow-violet" viewBox="0 0 10 6" refX="9" refY="3" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0,0 L10,3 L0,6 Z" fill="#a78bfa" />
+            </marker>
+            <marker id="arrow-emerald" viewBox="0 0 10 6" refX="9" refY="3" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0,0 L10,3 L0,6 Z" fill="#34d399" />
+            </marker>
+            <marker id="arrow-pink" viewBox="0 0 10 6" refX="9" refY="3" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0,0 L10,3 L0,6 Z" fill="#f472b6" />
             </marker>
           </defs>
 
@@ -295,6 +369,8 @@ export function PointerViewPanel() {
               HEAP
             </text>
           )}
+
+
 
           {/* Stack variable nodes */}
           {stackNodes.map(({ x, y, w, h, v }) => {
@@ -420,11 +496,37 @@ export function PointerViewPanel() {
           )}
 
           {/* Heap block nodes */}
-          {heapNodes.map(({ x, y, w, h, b }) => {
+          {heapNodes.map(({ x, y, w, h, b }, idx) => {
             const addrStr = formatAddress(b.address);
             const borderColor = b.active ? "var(--color-active)" : "var(--color-danger)";
+            const isFirstFreed = !b.active && (idx === 0 || heapNodes[idx - 1].b.active);
             return (
-              <g key={addrStr}>
+              <Fragment key={addrStr}>
+                {isFirstFreed && freedDividerY !== null && (
+                  <g key="freed-divider">
+                    <line
+                      x1={heapX}
+                      y1={freedDividerY}
+                      x2={heapX + HEAP_NODE_W}
+                      y2={freedDividerY}
+                      stroke="var(--color-border)"
+                      strokeDasharray="4 4"
+                      strokeWidth={1}
+                    />
+                    <text
+                      x={heapX}
+                      y={freedDividerY + 16}
+                      fill="var(--color-danger)"
+                      fontSize="10"
+                      fontWeight="600"
+                      letterSpacing="0.08em"
+                      fontFamily="var(--font-mono)"
+                    >
+                      FREED ALLOCATIONS
+                    </text>
+                  </g>
+                )}
+                <g>
                 <rect
                   x={x} y={y} width={w} height={h} rx={6}
                   fill={b.active ? "color-mix(in srgb, var(--color-active) 8%, var(--color-surface-raised))" : "color-mix(in srgb, var(--color-danger) 8%, var(--color-surface-raised))"}
@@ -449,27 +551,37 @@ export function PointerViewPanel() {
                   [{b.values.map((v) => formatExecutionValue(v)).join(", ")}]
                 </text>
 
-                {/* Pointer indicator dot on heap cards with pointer fields */}
-                {b.values.some((v) => v.kind === "pointer") && (
-                  <circle
-                    cx={x + w}
-                    cy={y + 44}
-                    r={4}
-                    fill="var(--color-accent)"
-                    stroke="var(--color-surface-raised)"
-                    strokeWidth={1.5}
-                  />
-                )}
+                {/* Pointer indicator dots on heap cards with pointer fields */}
+                {b.values.map((v, slotIdx) => {
+                  if (v.kind !== "pointer") return null;
+                  const dotY = slotIdx === 2 ? y + 34 : y + 44;
+                  const field = slotIdx === 1 ? "next" : slotIdx === 2 ? "prev" : `slot${slotIdx}`;
+                  const dotColor = getFieldColor(field, v.target === null ? "null" : "valid");
+                  return (
+                    <circle
+                      key={slotIdx}
+                      cx={x + w}
+                      cy={dotY}
+                      r={4}
+                      fill={dotColor}
+                      stroke="var(--color-surface-raised)"
+                      strokeWidth={1.5}
+                    />
+                  );
+                })}
               </g>
-            );
-          })}
+            </Fragment>
+          );
+        })}
 
           {/* Arrows */}
           {arrows.map((a, i) => {
-            const markerId = a.color.includes("accent") ? "arrow-valid" : a.color.includes("danger") ? "arrow-danger" : "arrow-null";
+            const markerId = getMarkerForColor(a.color);
 
             let pathD: string;
-            if (a.kind === "stack-to-stack") {
+            if (a.customPath) {
+              pathD = a.customPath;
+            } else if (a.kind === "stack-to-stack") {
               const idx = a.stackIndex ?? 0;
               pathD = routeOutwardLoop(a.x1, a.y1, a.x2, a.y2, idx);
             } else if (a.kind === "heap-to-heap") {

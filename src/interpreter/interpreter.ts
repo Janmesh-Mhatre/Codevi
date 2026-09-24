@@ -713,6 +713,7 @@ function* callMalloc(node: SyntaxNode, argNodes: SyntaxNode[], scope: Scope, fun
             ? defaultPointerValue(field.type.pointee)
             : defaultValueForType("int");
         scope.memory.write({ ...address, slot: field.slotOffset }, fieldDefault);
+        scope.memory.setLabel({ ...address, slot: field.slotOffset }, field.name);
       }
       yield makeStep(node, "statement", callStack, scope, `malloc: allocated ${def.byteSize} bytes at ${formatAddress(address)}`);
       const structPtr: CStructPointee = { kind: "struct", name: structName };
