@@ -40,6 +40,11 @@ export function extractStructureGraph(step: ExecutionStep | null): StructureGrap
     annotateBoundsCues(structures);
   }
 
+  // Phase 6.3: Detect array-backed Stacks & Queues (upgrades existing array items)
+  if (activeFrame) {
+    extractStacksAndQueues(step, activeFrame, structures);
+  }
+
   return {
     structures,
     changes: [], // populated by structureDiff
@@ -595,3 +600,115 @@ function extractLinkedLists(step: ExecutionStep, out: StructureItem[]): void {
   }
 }
 
+/**
+ * Phase 6.3: Detects array-backed stack and queue ADTs by examining naming conventions.
+ *
+ * Array-backed:
+ *   - Stack: An array alongside an integer variable named `top`.
+ *   - Queue: An array alongside integers named `front` and `rear` (or `head`/`tail`).
+ *
+ * This function mutates existing StructureItems in-place, upgrading their
+ * `kind` from "array" → "stack"/"queue" and attaching topIndex/frontIndex/rearIndex metadata.
+ */
+function extractStacksAndQueues(
+  step: ExecutionStep,
+  activeFrame: StackFrame,
+  structures: StructureItem[],
+): void {
+  // Collect all scalar integer variables as potential index candidates
+  const allVars: [string, ExecutionValue][] = [
+    ...Object.entries(activeFrame.parameters),
+    ...Object.entries(activeFrame.locals),
+    ...(step.globals ? Object.entries(step.globals) : []),
+  ];
+
+  const intVars = new Map<string, number>();
+  for (const [name, val] of allVars) {
+    if (val.kind === "scalar" && (val.type === "int" || val.type === "char")) {
+      intVars.set(name.toLowerCase(), val.value);
+    }
+  }
+
+  // --- Array-backed stack/queue detection ---
+  const topVal = intVars.get("top");
+  const frontVal = intVars.get("front") ?? intVars.get("head");
+  const rearVal = intVars.get("rear") ?? intVars.get("tail");
+
+  // Find which key was actually used for front/rear (for display labels)
+  const frontKey = intVars.has("front") ? "front" : intVars.has("head") ? "head" : null;
+  const rearKey = intVars.has("rear") ? "rear" : intVars.has("tail") ? "tail" : null;
+
+  if (topVal !== undefined || (frontVal !== undefined && rearVal !== undefined)) {
+    for (const struct of structures) {
+      if (struct.kind !== "array") continue;
+      // Only promote stack-local arrays (not heap arrays)
+      if (!struct.id.startsWith("array:")) continue;
+
+      const node = struct.nodes[0];
+      if (!node || node.kind !== "array" || node.slots.length === 0) continue;
+
+      const arrayLen = node.slots.length;
+
+      // Stack: if `top` variable exists, and no front+rear, promote to stack
+      if (topVal !== undefined && (frontVal === undefined || rearVal === undefined)) {
+        struct.kind = "stack";
+        struct.name = `Stack: ${node.label}`;
+        node.kind = "stack";
+
+        // Annotate the top slot
+        if (!node.metadata) node.metadata = {};
+        node.metadata.topIndex = topVal;
+        node.metadata.adtKind = "stack";
+
+        // Tag the slot at top with "top ▾"
+        if (topVal >= 0 && topVal < arrayLen) {
+          const slot = node.slots[topVal];
+          if (slot) {
+            if (!slot.activeIndexTags) slot.activeIndexTags = [];
+            if (!slot.activeIndexTags.includes("top ▾")) {
+              slot.activeIndexTags.push("top ▾");
+            }
+          }
+        }
+      }
+
+      // Queue: if `front` and `rear` exist, promote to queue
+      if (frontVal !== undefined && rearVal !== undefined) {
+        struct.kind = "queue";
+        struct.name = `Queue: ${node.label}`;
+        node.kind = "queue";
+
+        if (!node.metadata) node.metadata = {};
+        node.metadata.frontIndex = frontVal;
+        node.metadata.rearIndex = rearVal;
+        node.metadata.frontKey = frontKey;
+        node.metadata.rearKey = rearKey;
+        node.metadata.adtKind = "queue";
+
+        // Tag front slot
+        if (frontVal >= 0 && frontVal < arrayLen) {
+          const fSlot = node.slots[frontVal];
+          if (fSlot) {
+            if (!fSlot.activeIndexTags) fSlot.activeIndexTags = [];
+            const fTag = `${frontKey ?? "front"} ▾`;
+            if (!fSlot.activeIndexTags.includes(fTag)) {
+              fSlot.activeIndexTags.push(fTag);
+            }
+          }
+        }
+
+        // Tag rear slot
+        if (rearVal >= 0 && rearVal < arrayLen) {
+          const rSlot = node.slots[rearVal];
+          if (rSlot) {
+            if (!rSlot.activeIndexTags) rSlot.activeIndexTags = [];
+            const rTag = `${rearKey ?? "rear"} ▾`;
+            if (!rSlot.activeIndexTags.includes(rTag)) {
+              rSlot.activeIndexTags.push(rTag);
+            }
+          }
+        }
+      }
+    }
+  }
+}
