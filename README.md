@@ -1,222 +1,220 @@
 # Codevi
 
-*(formerly "Code Visualizer" — renamed during Phase 2; see
-`docs/PHASE_0_ARCHITECTURE.md` for the original Phase 0 planning under
-the old name)*
+An educational, browser-based interactive execution visualizer for C programs — built with React, TypeScript, Tailwind CSS, Monaco Editor, WebAssembly (Tree-sitter), and Tauri.
 
-An educational, browser-based tool for visualizing how C programs
-execute — built with React, TypeScript, and Rust/Tauri (currently run as
-a browser app; native packaging is postponed). See
-`docs/PHASE_0_ARCHITECTURE.md` for the original blueprint,
-`docs/phases/PHASE_2_PARSER.md` for the parser, `docs/phases/PHASE_3_EXECUTION.md` for
-the execution engine, `docs/phases/PHASE_4_VISUALIZATION.md` for the Variables/
-Stack/Memory panels, `docs/phases/PHASE_4_1_STDIO.md` for I/O,
-`docs/phases/PHASE_5_POINTERS.md` for pointers and dynamic memory, and
-`docs/phases/PHASE_6_POINTER_VISUALIZATION.md` for pointer visualization and the memory graph.
-
-**Status: Phase 6 — Pointer Visualization & Comprehensive Memory Model.**
-Interactive SVG **Pointer View** ("what points to what"), stack-to-stack
-curved connector routing, simulated pointer variable location display through
-`printf("%p")` and UI panels, pointer-to-pointer chain depth, array initialization
-with element address-of (`&arr[i]`), pointer arithmetic, pointer difference (`q - p`),
-and a 9-theme design system.
+Codevi enables students and programmers to see how C code actually executes: stepping through control flow, watching variables change across lexical scopes, tracing simulated memory layouts across stack and heap regions, and visualizing pointers and data structures in real time.
 
 ---
 
-## Setup instructions
+## Features
+
+- **Offline WebAssembly C Parser:** Powered by Tree-sitter (`web-tree-sitter` and `tree-sitter-c`) bundled locally; delivers instant syntax validation and AST generation with zero network dependencies.
+- **Pausable Generator-Based Interpreter:** In-browser C AST interpreter running on JavaScript generators (`function*` / `yield`), providing full control over execution (Run, Pause, Step Forward, and Reset).
+- **Scope & Frame Tracking:** Scope-correct call stack tracking supporting function calls, nested block scopes, recursion (up to 200 levels), and separate inspection of parameters and local variables.
+- **Deterministic Simulated Memory Model:** Eliminates confusing hardware addresses in favor of deterministic labels (`S001`, `S002` for stack cells; `H001`, `H002` for heap allocations).
+- **Memory Safety Diagnostics:** Runtime detection of use-after-free, double-free, invalid frees, null-pointer dereferences, and allocation leaks.
+- **Interactive SVG Pointer View:** Live visual graph displaying stack variables, heap blocks, NULL sentinel, and directional animated connectors with collision-free bezier routing.
+- **Dedicated Variable & Array View:** Tabular scalar view, 1D array boxes, 2D matrix grids with cell-level read/write highlighting, active index variable badges (`i ▾`), and boundary cues.
+- **Data Structure Detection:** Automatic recognition of singly linked lists, circular linked lists, array-backed Stacks (`top` variable), and array-backed Queues (`front`/`rear` or `head`/`tail`).
+- **Interactive Standard I/O:** Emulated `printf` (with `%d`, `%i`, `%c`, `%s`, `%f`, `%p`, `%ld`), `puts`, `putchar`, and interactive execution-pausing `scanf` and `getchar`.
+- **9-Theme Design System:** Curated palette (Dark Modern, Light Modern, One Dark Pro, GitHub Dark, Tokyo Night, Catppuccin Mocha, Dracula, Nord, Ayu Mirage) with `localStorage` persistence and dynamic Monaco Editor synchronization.
+
+---
+
+## Architecture
+
+Codevi follows a strict unidirectional, decoupled architecture:
+
+```text
+C Source Code (Monaco Editor)
+       ↓  (Debounced TextChange stream)
+Tree-sitter WASM Parser (parserService.ts)
+       ↓  (CST / AstNode representation)
+Generator-Based Interpreter (interpreter.ts)
+  ├── Lexical Scope Manager (scope.ts)
+  └── Simulated Memory Model (memory.ts)
+       ↓  (Yields internal InterpreterStep)
+Execution Engine (ExecutionEngine.ts)
+  ├── Plain data conversion (ExecutionStep)
+  ├── Pointer relationship derivation
+  └── Per-step memory access telemetry
+       ↓
+Zustand Store Mirror (executionStore.ts, uiStore.ts)
+       ↓
+UI & Visualization Panels (React 19 + SVG)
+```
+
+For a comprehensive technical breakdown of every layer, see [`docs/PROJECT_ANALYSIS.md`](file:///c:/Users/Janmesh%20Mhatre/Desktop/Programmes/Projects/Codevi/docs/PROJECT_ANALYSIS.md).
+
+---
+
+## Visualization
+
+Codevi offers multiple specialized visualization panels:
+
+1. **Pointer View (`PointerViewPanel`):**
+   - Bipartite layout: Stack variables on the left, Heap allocations on the right, centered `NULL` terminal card.
+   - Outward tiered stack-to-stack connector routing preventing card overlap.
+   - Stack-to-heap smooth bezier routing.
+   - Heap-to-heap adjacent, reverse, and circular closing connectors.
+   - Heap block ordering based on actual linked list `next` traversal order.
+   - Interactive sidebar displaying address, target, region, status, and pointer chain depth.
+2. **Variable & Array View (`VariableArrayViewPanel`):**
+   - Scalar variable table with simulated address badges (`@S001`).
+   - 1D array slot cards showing elements, indices, and active pointer/index cues (`i ▾`, `p ➔`).
+   - 2D array grid matrices with coordinate labels (`[r][c]`) and read/write highlighting.
+   - Array-backed Stack ADT visualization with `Top` position indicators.
+   - Array-backed Queue ADT visualization with `Front` and `Rear` indicators.
+3. **Stack Frames Panel (`StackPanel`):**
+   - Active call stack frames displaying function name, call depth, line number, parameters, and locals.
+4. **Memory Grid Panel (`MemoryPanel`):**
+   - Uniform view of all stack cells and heap blocks with pointer resolution chains (`pp → p → x`).
+5. **AST Viewer (`AstViewerPanel`):**
+   - Expandable syntax tree viewer with node counts and parse time metrics.
+
+---
+
+## Supported C Features
+
+### Verified Implemented Features
+- **Data Types:** `int`, `float`, `double`, `char`.
+- **Variables & Scope:** Local variables, global variables, block scoping `{ ... }`, multi-variable declarations.
+- **Arrays:** 1D and 2D stack arrays, partial initialization, subscripting (`arr[i]`, `matrix[r][c]`), array decay to pointer, element address-of (`&arr[i]`), dynamic heap arrays (`malloc(n * sizeof(int))`).
+- **Pointers:** Address-of (`&`), dereferencing read/write (`*p`, `*p = val`), pointer-to-pointer (`**pp`), pointer arithmetic (`+`, `-`, `++`, `--`, `+=`, `-=`), pointer subtraction (`q - p`), pointer comparisons (`<`, `<=`, `>`, `>=`, `==`, `!=`).
+- **Structs:** Definitions (`struct Node { int data; struct Node *next; };`), stack struct variables (`struct Node n;`), heap struct allocations (`malloc(sizeof(struct Node))`), direct access (`n.data`), arrow dereference (`p->next`), self-referential linked list structs.
+- **Dynamic Memory:** `malloc`, `calloc`, `realloc`, `free` (including safe `free(NULL)`), use-after-free and double-free error detection, allocation leak reporting.
+- **Standard I/O:** `printf` (`%d`, `%i`, `%c`, `%s`, `%f`, `%p`, `%ld`), `scanf` (interactive input prompt), `puts`, `putchar`, `getchar`.
+- **Control Flow:** `if` / `else`, `while`, `do { ... } while (...)`, `for`, `switch` / `case` / `default` (with fallthrough and duplicate case validation), `break`, `continue`, `return`.
+- **Functions:** User-defined functions, mutual and recursive calls (up to depth 200), parameter passing by value and by pointer.
+
+### Current Language Limitations & Unsupported Features
+- **String Variables:** General string variables (`char str[] = "hello"` or `char *s = "text"`) are not supported; string literals are only supported as direct arguments to `printf`/`puts`.
+- **Bit-Level / Overflow Semantics:** All numbers are backed by JavaScript IEEE 754 floats; integer overflow wrap-around is not simulated.
+- **Unions, Enums, Typedefs:** `union`, `enum`, and `typedef` are not supported.
+- **Function Pointers & Goto:** Function pointers and `goto` labels are not supported.
+- **Data Structure Limitations:** Stacks and Queues are supported via array backing only (linked-list-backed ADT detection is unsupported); Trees and Graphs are planned.
+
+For the complete status of all features, consult [`docs/FEATURE_STATUS.md`](file:///c:/Users/Janmesh%20Mhatre/Desktop/Programmes/Projects/Codevi/docs/FEATURE_STATUS.md).
+
+---
+
+## Project Structure
+
+```text
+codevi/
+├── docs/                            # Project specifications & architecture documentation
+│   ├── FEATURE_STATUS.md            # Verified feature status matrix
+│   ├── PROJECT_ANALYSIS.md          # Comprehensive master analysis document
+│   ├── ROADMAP.md                   # Multi-phase development roadmap
+│   └── phases/                      # Phase-by-phase design documents
+├── src/
+│   ├── app/                         # React DOM root and application container
+│   ├── components/
+│   │   ├── common/                  # ErrorDialog, PanelShell, ResizeHandle, Tabs, Toast
+│   │   ├── editor/                  # Monaco CodeEditor, font remeasurement, markers
+│   │   ├── layout/                  # AppShell workbench layout
+│   │   ├── panels/                  # Panels (PointerView, VariableArrayView, Memory, etc.)
+│   │   └── toolbar/                 # Execution controls and ThemeDropdown
+│   ├── execution/
+│   │   ├── engine/ExecutionEngine.ts# Step scheduler, time-slice loop, input suspension
+│   │   ├── models/executionTypes.ts # Snapshot interfaces (ExecutionStep, StackFrame, etc.)
+│   │   └── utils/                   # Value formatters and change-highlight hooks
+│   ├── hooks/                       # useCParser, useTheme
+│   ├── interpreter/                 # Generator-based C interpreter, scope, values, types
+│   ├── memory/                      # Simulated deterministic memory model (stack & heap)
+│   ├── parser/                      # Tree-sitter WASM service, AST converter, AST types
+│   ├── state/                       # Zustand stores (execution, ui, parser, editor)
+│   ├── stdlib/                      # C Standard I/O (printf, scanf, getchar) emulation
+│   ├── themes/                      # 9-theme design system and Monaco synchronizer
+│   └── visualization/               # Structure detector, connectors, layouts, diff engine
+├── tests/                           # Unit and integration test suite
+│   └── unit/                        # 31 test files, 365 tests (100% passing)
+├── vitest.config.ts                 # Vitest test configuration
+├── vite.config.ts                   # Vite bundler configuration
+└── package.json                     # Dependencies & scripts
+```
+
+---
+
+## Getting Started
 
 ### Prerequisites
+- [Node.js](https://nodejs.org/) 20.x or later
+- npm 10.x or later
 
-- [Node.js](https://nodejs.org/) 20 or later, and npm
-
-Browser-based by design — native/Tauri packaging is explicitly postponed
-project-wide.
-
-### Run it (browser)
-
+### Installation
 ```bash
+git clone https://github.com/Janmesh-Mhatre/Codevi.git
+cd Codevi
 npm install
+```
+
+---
+
+## Development
+
+Run the local Vite development server:
+```bash
 npm run dev
 ```
 
-Open the printed `localhost` URL (default `http://localhost:1420`). Try:
+Open your browser to the local server URL (default: `http://localhost:1420`).
 
-```c
-#include <stdio.h>
+---
 
-int main(void) {
-    int x = 25;
-    int *p = &x;
-    printf("x = %d, &x = %p\n", x, &x);
-    printf("p = %p, &p = %p, *p = %d\n", p, &p, *p);
-    return 0;
-}
-```
+## Testing
 
-Step through it or click **Run**:
-- **Pointer View** renders animated directional arrows connecting `p` on the STACK to `x`, along with simulated addresses `@S001` and `@S002`.
-- **Console** prints `x = 25, &x = S001` and `p = S001, &p = S002, *p = 25`.
-- **Variables Panel** displays `x` with `@S001` and `p` with `→ S001 (x) @S002`.
-- **Memory Panel** shows stack cells `S001` and `S002` with pointer chain resolution.
-
-### Run the tests
-
+Run the automated test suite with Vitest:
 ```bash
 npm test
 ```
 
-**206 unit tests** (Vitest across 17 test suites, 0 failures):
-- 67 cases from Phases 3, 4, 4.1
-- 29 cases from Phase 5 (pointers, dynamic memory, safety errors)
-- 110 cases for Phase 6 (pointer view, array indexing, pointer arithmetic/subtraction, `%p` location distinction, and theme system)
+**Test Suite Status:** **31 test files, 365 tests passing cleanly (0 failures)**.
 
-### Run it as a desktop window (optional, needs Rust)
+Tests run with `fileParallelism: false` in `vitest.config.ts` to ensure deterministic execution of WebAssembly memory across test cycles.
 
+---
+
+## Production Build
+
+To perform type-checking and build the production bundle:
+```bash
+npm run build
+```
+
+Assets are built to `dist/` with offline WebAssembly binaries (`web-tree-sitter.wasm`, `tree-sitter-c.wasm`), Monaco workers, and self-hosted fonts.
+
+Preview the production build locally:
+```bash
+npm run preview
+```
+
+---
+
+## Deployment
+
+Codevi is built as a static client-side web application. It can be hosted on any static hosting platform (Vercel, GitHub Pages, Netlify, Cloudflare Pages, AWS S3/CloudFront) with standard single-page app (SPA) routing to `dist/index.html`.
+
+For desktop distribution, native builds are supported via Tauri:
 ```bash
 npm run tauri dev
+npm run tauri build
 ```
+*(Note: Native desktop packaging is optional; the browser web application is the primary active platform).*
 
 ---
 
-## What's implemented
+## Documentation
 
-### Phase 6 — Pointer Visualization & Memory Graph
-
-| Area | Status |
-|---|---|
-| Interactive SVG Pointer View tab showing "what points to what" | done |
-| Outward tiered stack-to-stack connector routing avoiding card collision | done |
-| Stack-to-heap animated bezier connector routing | done |
-| Pointer variable locations displayed via `printf("%p")` (`p` target vs `&p` own address) | done |
-| Simulated address badges (`@S001`, `@S002`) in Variables panel and Pointer cards | done |
-| Pointer detail sidebar with address, target, region, status, and chain depth | done |
-| Array initialization slot values displayed in Variables and Memory panels | done |
-| Address-of array element (`&arr[i]`) with slot offsets | done |
-| Pointer arithmetic (`++`, `--`, `+=`, `-=`) across array elements and heap slots | done |
-| Pointer difference subtraction (`q - p`) with `%ld` printf specifier | done |
-| 9-theme design system selector with Monaco Editor theme synchronization | done |
-| Editor caret remeasurement on font load and layout resize | done |
-| 206 automated unit tests across 17 test suites | done |
-| `docs/phases/PHASE_6_POINTER_VISUALIZATION.md` | done |
-
-### Phase 5 — Pointers & Dynamic Memory
-
-| Area | Status |
-|---|---|
-| `&` (address-of) and `*` (dereference read/write) | done |
-| Pointer-to-pointer, to arbitrary depth | done |
-| NULL pointer defaults, comparisons, and safety diagnostics | done |
-| `malloc`, `calloc`, `realloc`, `free` (including safe `free(NULL)`) | done |
-| Use-after-free and double-free runtime error detection | done |
-| `sizeof(TYPE)` and `sizeof(variable)` | done |
-| Simulated address space model (`S001`, `H001`) | done |
-
-### Phase 4.1 — Basic C Standard I/O
-
-| Area | Status |
-|---|---|
-| `printf`/`scanf`/`puts`/`putchar`/`getchar` with real interactive input pausing | done |
-| Format specifiers: `%d`, `%i`, `%c`, `%s`, `%f`, `%p`, `%ld` | done |
-
-### Phase 4 — Memory, Variables & Stack Visualization
-
-| Area | Status |
-|---|---|
-| Variables, Memory, and Stack panels, scope-correct and synchronized with execution | done |
-
-### Phase 3 — Execution Engine
-
-| Area | Status |
-|---|---|
-| In-browser generator-based C interpreter; Run/Pause/Step Forward/Reset | done |
-
-### Phase 2 — Parser Integration
-
-| Area | Status |
-|---|---|
-| Tree-sitter (WASM, fully offline); AST Viewer; syntax diagnostics | done |
-
-### Phase 1 — Project Foundation
-
-| Area | Status |
-|---|---|
-| Tauri + React + TypeScript + Tailwind project, workbench layout, theme system | done |
+- [`docs/PROJECT_ANALYSIS.md`](file:///c:/Users/Janmesh%20Mhatre/Desktop/Programmes/Projects/Codevi/docs/PROJECT_ANALYSIS.md) — Comprehensive master analysis of all subsystems, architecture, and memory models.
+- [`docs/FEATURE_STATUS.md`](file:///c:/Users/Janmesh%20Mhatre/Desktop/Programmes/Projects/Codevi/docs/FEATURE_STATUS.md) — Detailed feature status matrix.
+- [`docs/ROADMAP.md`](file:///c:/Users/Janmesh%20Mhatre/Desktop/Programmes/Projects/Codevi/docs/ROADMAP.md) — Multi-phase project roadmap and current completion status.
+- [`docs/DEVELOPMENT_GUIDELINES.md`](file:///c:/Users/Janmesh%20Mhatre/Desktop/Programmes/Projects/Codevi/docs/DEVELOPMENT_GUIDELINES.md) — Code conventions and phase rules.
+- [`docs/phases/`](file:///c:/Users/Janmesh%20Mhatre/Desktop/Programmes/Projects/Codevi/docs/phases/) — Historical design documents for individual phases.
 
 ---
 
-## Folder structure
+## Current Status
 
-```
-codevi/
-├── src/
-│   ├── components/
-│   │   ├── common/              # PanelShell, Tabs, ErrorDialog, Toast
-│   │   ├── editor/              # CodeEditor (Monaco, font remeasurement, caret sync)
-│   │   ├── layout/              # AppShell, Toolbar (Theme Selector dropdown)
-│   │   └── panels/
-│   │       ├── AstViewerPanel.tsx
-│   │       ├── ConsolePanel.tsx
-│   │       ├── ExplanationPanel.tsx
-│   │       ├── MemoryPanel.tsx        # Simulated stack/heap addresses, pointer chains
-│   │       ├── PointerViewPanel.tsx   # Interactive SVG pointer graph & connectors
-│   │       ├── StackPanel.tsx
-│   │       └── VariablePanel.tsx      # Variables, pointer targets, addresses, arrays
-│   ├── execution/
-│   │   ├── engine/ExecutionEngine.ts  # Generates steps, heap, pointerView data
-│   │   ├── models/executionTypes.ts   # ExecutionStep, PointerViewData, StackFrame
-│   │   └── utils/                     # formatValue, changed keys detection
-│   ├── interpreter/
-│   │   ├── interpreter.ts       # AST interpreter, pointer arithmetic, subtraction
-│   │   ├── memory.ts            # MemoryModel: stack & heap cells, simulated addresses
-│   │   ├── scope.ts             # Address bindings
-│   │   └── values.ts            # CValue: CScalarValue | CPointerValue | CArrayValue
-│   ├── parser/
-│   │   ├── astConvert.ts
-│   │   └── parserService.ts     # Tree-sitter WASM parser
-│   ├── state/
-│   │   ├── executionStore.ts
-│   │   ├── parserStore.ts
-│   │   └── uiStore.ts           # Layout dimensions, panel visibility, 9-theme system
-│   └── stdlib/
-│       └── stdio.ts             # printf (%p, %ld), scanf, getchar
-├── tests/
-│   └── unit/
-│       ├── execution/           # callStack, executionEngineStdio
-│       ├── interpreter/         # interpreter core tests
-│       ├── memory/              # phase6Pointers, phase6Arrays, phase6PointerLocations
-│       ├── stdlib/              # stdio, stdioInterpreter
-│       └── ui/                  # uiStore, themeSystem
-├── docs/
-│   ├── PHASE_0_ARCHITECTURE.md
-│   ├── ROADMAP.md
-│   ├── CHANGELOG.md
-│   └── phases/
-│       ├── PHASE_2_PARSER.md
-│       ├── PHASE_3_EXECUTION.md
-│       ├── PHASE_4_VISUALIZATION.md
-│       ├── PHASE_4_1_STDIO.md
-│       ├── PHASE_5_POINTERS.md
-│       └── PHASE_6_POINTER_VISUALIZATION.md
-├── vitest.config.ts
-└── package.json
-```
-
----
-
-## Validation notes
-
-- `npm test`: **17 test files, 206 tests passing** (0 failures).
-- `npm run build` (`tsc && vite build`): builds client environment cleanly with 0 errors.
-- Caret alignment verified across Monaco editor fonts and layout resizing.
-- Visual connector routing and pointer location display verified across pointer, array, heap, and pointer-to-pointer scenarios.
-
----
-
-## Future extension points
-
-| Phase | Description | Reference |
-|---|---|---|
-| Phase 7 | Data Structure Visualization (Linked lists, binary search trees, graphs) | `docs/ROADMAP.md` |
-| Phase 8 | Algorithm Visualization (Sorting algorithms, step-by-step partition/merge) | `docs/ROADMAP.md` |
-| Phase 9 | Explanation Engine (Dynamic step explanations, complexity hints) | `docs/ROADMAP.md` |
-| Phase 10 | Debugging Tools (Breakpoints, watch expressions, step out) | `docs/ROADMAP.md` |
+- **Phases 0 through 6.3 Completed:** Core project foundation, WASM parser, generator interpreter, memory model, stdio, pointers, 1D/2D arrays, linked lists, array-backed stacks/queues, and the 9-theme design system are fully implemented and verified with 365 unit tests.
+- **Active Areas & Next Steps:** Binary search trees, graph data structure detection and layout, and reverse step execution ("Step Back").
