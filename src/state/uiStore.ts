@@ -42,6 +42,19 @@ interface UIState {
   setRightPanelVisible: (visible: boolean) => void;
   toggleRightPanel: () => void;
 
+  // Granular panel section visibility
+  isMainViewsVisible: boolean;
+  setMainViewsVisible: (visible: boolean) => void;
+  toggleMainViews: () => void;
+
+  isVariablesVisible: boolean;
+  setVariablesVisible: (visible: boolean) => void;
+  toggleVariables: () => void;
+
+  isMemoryVisible: boolean;
+  setMemoryVisible: (visible: boolean) => void;
+  toggleMemory: () => void;
+
   rightPanelBottomHeight: number;
   setRightPanelBottomHeight: (height: number) => void;
 
@@ -102,6 +115,18 @@ export const useUIStore = create<UIState>()(
       setRightPanelVisible: (visible) => set({ isRightPanelVisible: visible }),
       toggleRightPanel: () => set((state) => ({ isRightPanelVisible: !state.isRightPanelVisible })),
 
+      isMainViewsVisible: true,
+      setMainViewsVisible: (visible) => set({ isMainViewsVisible: visible }),
+      toggleMainViews: () => set((state) => ({ isMainViewsVisible: !state.isMainViewsVisible })),
+
+      isVariablesVisible: true,
+      setVariablesVisible: (visible) => set({ isVariablesVisible: visible }),
+      toggleVariables: () => set((state) => ({ isVariablesVisible: !state.isVariablesVisible })),
+
+      isMemoryVisible: true,
+      setMemoryVisible: (visible) => set({ isMemoryVisible: visible }),
+      toggleMemory: () => set((state) => ({ isMemoryVisible: !state.isMemoryVisible })),
+
       rightPanelBottomHeight: DEFAULT_RIGHT_BOTTOM_HEIGHT,
       setRightPanelBottomHeight: (height) => set({ rightPanelBottomHeight: Math.max(100, Math.round(height)) }),
 
@@ -119,6 +144,9 @@ export const useUIStore = create<UIState>()(
         set({
           rightPanelWidth: DEFAULT_RIGHT_PANEL_WIDTH,
           isRightPanelVisible: true,
+          isMainViewsVisible: true,
+          isVariablesVisible: true,
+          isMemoryVisible: true,
           rightPanelBottomHeight: DEFAULT_RIGHT_BOTTOM_HEIGHT,
           consoleHeight: DEFAULT_CONSOLE_HEIGHT,
           isConsoleVisible: true,
@@ -147,6 +175,9 @@ export const useUIStore = create<UIState>()(
         theme: state.theme,
         rightPanelWidth: state.rightPanelWidth,
         isRightPanelVisible: state.isRightPanelVisible,
+        isMainViewsVisible: state.isMainViewsVisible,
+        isVariablesVisible: state.isVariablesVisible,
+        isMemoryVisible: state.isMemoryVisible,
         rightPanelBottomHeight: state.rightPanelBottomHeight,
         consoleHeight: state.consoleHeight,
         isConsoleVisible: state.isConsoleVisible,

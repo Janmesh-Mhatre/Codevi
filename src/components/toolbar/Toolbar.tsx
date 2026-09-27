@@ -8,11 +8,11 @@ import {
   StepBack,
   RotateCcw,
   Settings,
-  Columns2,
 } from "lucide-react";
 import { useUIStore } from "../../state/uiStore";
 import { pauseExecution, resetExecution, runExecution, stepExecution, useExecutionStore } from "../../state/executionStore";
 import { ThemeDropdown } from "./ThemeDropdown";
+import { PanelsDropdown } from "./PanelsDropdown";
 
 interface ToolbarButtonProps {
   label: string;
@@ -63,8 +63,6 @@ function Divider() {
  */
 export function Toolbar() {
   const showToast = useUIStore((state) => state.showToast);
-  const isRightPanelVisible = useUIStore((state) => state.isRightPanelVisible);
-  const toggleRightPanel = useUIStore((state) => state.toggleRightPanel);
   const status = useExecutionStore((state) => state.status);
 
   const notImplemented = () => showToast("Feature not implemented yet.");
@@ -93,12 +91,7 @@ export function Toolbar() {
 
       <div className="flex-1" />
 
-      <ToolbarButton
-        label={isRightPanelVisible ? "Hide workspace panels" : "Show workspace panels"}
-        icon={Columns2}
-        onClick={toggleRightPanel}
-        active={isRightPanelVisible}
-      />
+      <PanelsDropdown />
       <Divider />
       <ThemeDropdown />
       <ToolbarButton label="Settings" icon={Settings} onClick={notImplemented} />

@@ -7,6 +7,7 @@ import { diffExecutionSteps } from "../diff/structureDiff";
 import { layoutArrayStructures } from "../layout/arrayLayout";
 import { layoutPointerGraph } from "../layout/pointerGraphLayout";
 import { layoutLinkedListStructures } from "../layout/linkedListLayout";
+import { layoutTreeStructures } from "../layout/treeLayout";
 import { StructureControls } from "./StructureControls";
 import { StructureCanvas } from "./StructureCanvas";
 import { StructureNodeCard } from "./StructureNodeCard";
@@ -63,6 +64,11 @@ export const StructureVisualizationPanel: React.FC = () => {
     return graph.structures.filter((s) => s.kind === "linked-list");
   }, [graph]);
 
+  const treeStructures = useMemo(() => {
+    if (!graph) return [];
+    return graph.structures.filter((s) => s.kind === "tree");
+  }, [graph]);
+
   const pointerStructure = useMemo(() => {
     if (!graph) return null;
     return graph.structures.find((s) => s.kind === "pointer-graph") ?? null;
@@ -87,16 +93,26 @@ export const StructureVisualizationPanel: React.FC = () => {
     return layoutLinkedListStructures(allLLNodes, allLLLinks, 20, 20);
   }, [linkedListStructures]);
 
+  const treeLayout = useMemo(() => {
+    if (!treeStructures.length) {
+      return { placedNodes: [], placedLinks: [], nullBadges: [], width: 0, height: 0 };
+    }
+    const allTreeNodes = treeStructures.flatMap((s) => s.nodes);
+    const allTreeLinks = treeStructures.flatMap((s) => s.links);
+    return layoutTreeStructures(allTreeNodes, allTreeLinks, 20, 20);
+  }, [treeStructures]);
+
   const pointerGraphLayout = useMemo(() => {
     if (!pointerStructure) return null;
     return layoutPointerGraph(pointerStructure.nodes, pointerStructure.links);
   }, [pointerStructure]);
 
   // Combine placed nodes and links depending on filter
-  const { allPlacedNodes, allPlacedLinks, nullNodeRect, canvasW, canvasH } = useMemo(() => {
+  const { allPlacedNodes, allPlacedLinks, nullNodeRect, treeNullBadges, canvasW, canvasH } = useMemo(() => {
     const nodes: PlacedNode[] = [];
     const links: PlacedLink[] = [];
     let activeNullRect: LayoutRect | null = null;
+    const treeNullBadges: LayoutRect[] = [];
 
     let startY = 20;
 
@@ -118,6 +134,24 @@ export const StructureVisualizationPanel: React.FC = () => {
         };
       }
       startY += linkedListLayout.height + 20;
+    }
+
+    // Show trees if filter is "all" or "tree"
+    if ((structureFilter === "all" || structureFilter === "tree") && treeLayout.placedNodes.length > 0) {
+      for (const tn of treeLayout.placedNodes) {
+        nodes.push({ ...tn, y: tn.y + startY });
+      }
+      for (const tl of treeLayout.placedLinks) {
+        links.push({
+          ...tl,
+          pathD: tl.pathD.replace(/([0-9.]+)\s+([0-9.]+)/g, (_m, x, y) => `${x} ${parseFloat(y) + startY}`),
+        });
+      }
+      // Track tree NULL badges with Y offset
+      for (const nb of treeLayout.nullBadges) {
+        treeNullBadges.push({ ...nb, y: nb.y + startY });
+      }
+      startY += treeLayout.height + 20;
     }
 
     // Show arrays if filter is "all" or "array"
@@ -147,6 +181,7 @@ export const StructureVisualizationPanel: React.FC = () => {
     const maxW = Math.max(
       400,
       linkedListLayout.width,
+      treeLayout.width,
       arrayDimensions.width,
       pointerGraphLayout ? pointerGraphLayout.width : 0
     );
@@ -156,10 +191,11 @@ export const StructureVisualizationPanel: React.FC = () => {
       allPlacedNodes: nodes,
       allPlacedLinks: links,
       nullNodeRect: activeNullRect,
+      treeNullBadges,
       canvasW: maxW,
       canvasH: maxH,
     };
-  }, [structureFilter, linkedListLayout, placedArrayNodes, arrayDimensions, pointerGraphLayout]);
+  }, [structureFilter, linkedListLayout, treeLayout, placedArrayNodes, arrayDimensions, pointerGraphLayout]);
 
   // Handler for stepping to the next structural mutation
   const handleStepStructure = () => {
@@ -280,6 +316,35 @@ export const StructureVisualizationPanel: React.FC = () => {
               </text>
             </g>
           )}
+
+          {/* Phase 6.4: Tree NULL child badges */}
+          {treeNullBadges.map((badge, i) => (
+            <g key={`tree-null-${i}`} transform={`translate(${badge.x}, ${badge.y})`}>
+              <rect
+                x={0}
+                y={0}
+                width={badge.w}
+                height={badge.h}
+                rx={3}
+                fill="var(--color-surface-raised)"
+                stroke="var(--color-border)"
+                strokeWidth={1}
+                strokeDasharray="3 2"
+                opacity={0.7}
+              />
+              <text
+                x={badge.w / 2}
+                y={badge.h / 2 + 3}
+                fill="var(--color-fg-muted)"
+                fontSize="9"
+                fontWeight="600"
+                fontFamily="var(--font-mono)"
+                textAnchor="middle"
+              >
+                ∅
+              </text>
+            </g>
+          ))}
         </StructureCanvas>
 
         {/* Generalized Detail Sidebar */}

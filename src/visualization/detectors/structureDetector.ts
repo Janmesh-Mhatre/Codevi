@@ -45,6 +45,12 @@ export function extractStructureGraph(step: ExecutionStep | null): StructureGrap
     extractStacksAndQueues(step, activeFrame, structures);
   }
 
+  // Phase 6.4: Detect Binary Trees, BSTs, and array-backed Binary Heaps
+  extractTrees(step, structures);
+  if (activeFrame) {
+    extractBinaryHeaps(step, activeFrame, structures);
+  }
+
   return {
     structures,
     changes: [], // populated by structureDiff
@@ -118,8 +124,10 @@ function extractStackArrays(frame: StackFrame, out: StructureItem[]): void {
 function extractHeapStructures(heap: HeapBlock[], out: StructureItem[]): void {
   for (const block of heap) {
     // Phase 6.2: skip struct Node blocks (slot 1 is a pointer) so they don't produce duplicate arrays
+    // Phase 6.4: also skip tree nodes (slot 1 AND slot 2 are pointers)
     const isLinkedListNode = block.slotCount >= 2 && block.values[1]?.kind === "pointer";
-    if (isLinkedListNode) continue;
+    const isTreeNode = block.slotCount >= 3 && block.values[1]?.kind === "pointer" && block.values[2]?.kind === "pointer";
+    if (isLinkedListNode || isTreeNode) continue;
 
     const addrStr = formatAddress(block.address);
     const slots: StructureSlot[] = [];
@@ -386,12 +394,16 @@ function extractLinkedLists(step: ExecutionStep, out: StructureItem[]): void {
 
   // Find all candidate linked list nodes in heap:
   // A heap block with at least 2 slots where slot 1 is a pointer (or null pointer).
+  // Phase 6.4: exclude blocks that look like tree nodes (slot 1 AND slot 2 are pointers).
   const nodeMap = new Map<string, HeapBlock>();
   for (const block of step.heap) {
     if (!block.active) continue;
     if (block.slotCount >= 2 && block.values.length >= 2) {
       const slot1 = block.values[1];
       if (slot1 && slot1.kind === "pointer") {
+        // If slot 2 is also a pointer, this is likely a tree node — skip
+        const slot2 = block.values[2];
+        if (slot2 && slot2.kind === "pointer") continue;
         nodeMap.set(formatAddress(block.address), block);
       }
     }
@@ -710,5 +722,444 @@ function extractStacksAndQueues(
         }
       }
     }
+  }
+}
+
+/**
+ * Phase 6.4: Extracts binary tree / BST structures from heap blocks.
+ *
+ * A tree node is a heap block with 3+ slots where:
+ *   - slot 0: data value (scalar)
+ *   - slot 1: left child pointer
+ *   - slot 2: right child pointer
+ *
+ * Tree roots are found via stack/global pointers named "root", "tree", "bst", "t"
+ * or via in-degree-0 analysis. BST property is validated across the entire tree.
+ */
+function extractTrees(step: ExecutionStep, out: StructureItem[]): void {
+  const activeFrame = step.callStack.find((f) => f.isActive) ?? step.callStack[step.callStack.length - 1];
+  if (!activeFrame) return;
+
+  // Find all candidate tree nodes in heap:
+  // A heap block with 3+ slots where slot 1 and slot 2 are both pointers.
+  const treeNodeMap = new Map<string, HeapBlock>();
+  for (const block of step.heap) {
+    if (!block.active) continue;
+    if (block.slotCount >= 3 && block.values.length >= 3) {
+      const slot1 = block.values[1];
+      const slot2 = block.values[2];
+      if (slot1 && slot1.kind === "pointer" && slot2 && slot2.kind === "pointer") {
+        treeNodeMap.set(formatAddress(block.address), block);
+      }
+    }
+  }
+
+  if (treeNodeMap.size === 0) return;
+
+  // Collect stack and global pointers that point to any tree node
+  const allVars: [string, ExecutionValue][] = [
+    ...Object.entries(activeFrame.parameters),
+    ...Object.entries(activeFrame.locals),
+    ...(step.globals ? Object.entries(step.globals) : []),
+  ];
+
+  // Map each node address to stack pointer names
+  const nodePointers = new Map<string, string[]>();
+  for (const [varName, val] of allVars) {
+    if (val.kind === "pointer" && val.target && val.target.space === "heap") {
+      const targetStr = formatAddress({ space: "heap", id: val.target.id, slot: 0 });
+      if (treeNodeMap.has(targetStr)) {
+        const list = nodePointers.get(targetStr) ?? [];
+        list.push(varName);
+        nodePointers.set(targetStr, list);
+      }
+    }
+  }
+
+  // Determine in-degree (how many other tree nodes point to this node as left/right child)
+  const inDegree = new Map<string, number>();
+  for (const key of treeNodeMap.keys()) {
+    inDegree.set(key, 0);
+  }
+  for (const block of treeNodeMap.values()) {
+    // Left child (slot 1)
+    const leftVal = block.values[1];
+    if (leftVal && leftVal.kind === "pointer" && leftVal.target && leftVal.target.space === "heap") {
+      const leftKey = formatAddress({ space: "heap", id: leftVal.target.id, slot: 0 });
+      if (inDegree.has(leftKey)) {
+        inDegree.set(leftKey, (inDegree.get(leftKey) ?? 0) + 1);
+      }
+    }
+    // Right child (slot 2)
+    const rightVal = block.values[2];
+    if (rightVal && rightVal.kind === "pointer" && rightVal.target && rightVal.target.space === "heap") {
+      const rightKey = formatAddress({ space: "heap", id: rightVal.target.id, slot: 0 });
+      if (inDegree.has(rightKey)) {
+        inDegree.set(rightKey, (inDegree.get(rightKey) ?? 0) + 1);
+      }
+    }
+  }
+
+  // Find root candidates
+  const rootCandidates: string[] = [];
+  const preferredNames = ["root", "tree", "bst", "t"];
+
+  // Priority: stack pointer with preferred name
+  for (const [varName, val] of allVars) {
+    if (val.kind === "pointer" && val.target && val.target.space === "heap") {
+      const targetStr = formatAddress({ space: "heap", id: val.target.id, slot: 0 });
+      if (treeNodeMap.has(targetStr) && preferredNames.includes(varName.toLowerCase())) {
+        if (!rootCandidates.includes(targetStr)) rootCandidates.unshift(targetStr);
+      }
+    }
+  }
+
+  // In-degree 0 nodes pointed to by stack pointers
+  for (const [nodeKey, deg] of inDegree.entries()) {
+    if (deg === 0 && nodePointers.has(nodeKey) && !rootCandidates.includes(nodeKey)) {
+      rootCandidates.push(nodeKey);
+    }
+  }
+
+  // Fallback: in-degree 0 nodes
+  if (rootCandidates.length === 0) {
+    for (const [nodeKey, deg] of inDegree.entries()) {
+      if (deg === 0 && !rootCandidates.includes(nodeKey)) {
+        rootCandidates.push(nodeKey);
+      }
+    }
+  }
+
+  // Final fallback: any tree node
+  if (rootCandidates.length === 0 && treeNodeMap.size > 0) {
+    rootCandidates.push(treeNodeMap.keys().next().value!);
+  }
+
+  const visitedGlobal = new Set<string>();
+
+  for (const rootKey of rootCandidates) {
+    if (visitedGlobal.has(rootKey)) continue;
+
+    const treeNodes: StructureNode[] = [];
+    const treeLinks: StructureLink[] = [];
+    let nodeIndex = 0;
+
+    // BFS/DFS traversal to collect all nodes in this tree
+    const queue: string[] = [rootKey];
+    const visitedInTree = new Set<string>();
+
+    while (queue.length > 0) {
+      const currentKey = queue.shift()!;
+      if (visitedInTree.has(currentKey)) continue;
+      if (!treeNodeMap.has(currentKey)) continue;
+
+      visitedInTree.add(currentKey);
+      visitedGlobal.add(currentKey);
+
+      const block = treeNodeMap.get(currentKey)!;
+      const dataVal = block.values[0] ?? { kind: "scalar", type: "int", value: 0 };
+      const leftVal = block.values[1];
+      const rightVal = block.values[2];
+
+      // Active traversal tags
+      const ptrNames = nodePointers.get(currentKey) ?? [];
+      const tags = ptrNames.map((p) => {
+        const lower = p.toLowerCase();
+        if (lower === "root") return `${p} ➔`;
+        return `${p} ▾`;
+      });
+
+      const nodeId = `tree:node:${currentKey}`;
+
+      const slots: StructureSlot[] = [
+        {
+          index: 0,
+          name: "data",
+          value: dataVal,
+          address: { space: "heap", id: block.address.id, slot: 0 },
+          highlight: "none",
+          activeIndexTags: tags.length > 0 ? tags : undefined,
+        },
+        {
+          index: 1,
+          name: "left",
+          value: leftVal,
+          address: { space: "heap", id: block.address.id, slot: 1 },
+          highlight: "none",
+        },
+        {
+          index: 2,
+          name: "right",
+          value: rightVal,
+          address: { space: "heap", id: block.address.id, slot: 2 },
+          highlight: "none",
+        },
+      ];
+
+      treeNodes.push({
+        id: nodeId,
+        kind: "tree",
+        label: `Node ${nodeIndex} (${currentKey})`,
+        address: block.address,
+        type: "struct TreeNode",
+        slots,
+        highlight: block.active ? "none" : "target",
+        metadata: {
+          nodeIndex,
+          heapAddress: currentKey,
+          byteSize: block.byteSize,
+        },
+      });
+
+      // Left child link
+      if (leftVal && leftVal.kind === "pointer") {
+        if (leftVal.target === null) {
+          treeLinks.push({
+            id: `tree:link:${nodeId}->left:null`,
+            sourceNodeId: nodeId,
+            sourceSlotIndex: 1,
+            targetNodeId: null,
+            targetSlotIndex: 0,
+            targetAddress: null,
+            label: "left",
+            status: "null",
+            routingStyle: "direct",
+          });
+        } else if (leftVal.target.space === "heap") {
+          const leftKey = formatAddress({ space: "heap", id: leftVal.target.id, slot: 0 });
+          const targetNodeId = `tree:node:${leftKey}`;
+          treeLinks.push({
+            id: `tree:link:${nodeId}->left:${targetNodeId}`,
+            sourceNodeId: nodeId,
+            sourceSlotIndex: 1,
+            targetNodeId,
+            targetSlotIndex: 0,
+            targetAddress: leftVal.target,
+            label: "left",
+            status: "valid",
+            routingStyle: "direct",
+          });
+          if (!visitedInTree.has(leftKey)) queue.push(leftKey);
+        }
+      }
+
+      // Right child link
+      if (rightVal && rightVal.kind === "pointer") {
+        if (rightVal.target === null) {
+          treeLinks.push({
+            id: `tree:link:${nodeId}->right:null`,
+            sourceNodeId: nodeId,
+            sourceSlotIndex: 2,
+            targetNodeId: null,
+            targetSlotIndex: 0,
+            targetAddress: null,
+            label: "right",
+            status: "null",
+            routingStyle: "direct",
+          });
+        } else if (rightVal.target.space === "heap") {
+          const rightKey = formatAddress({ space: "heap", id: rightVal.target.id, slot: 0 });
+          const targetNodeId = `tree:node:${rightKey}`;
+          treeLinks.push({
+            id: `tree:link:${nodeId}->right:${targetNodeId}`,
+            sourceNodeId: nodeId,
+            sourceSlotIndex: 2,
+            targetNodeId,
+            targetSlotIndex: 0,
+            targetAddress: rightVal.target,
+            label: "right",
+            status: "valid",
+            routingStyle: "direct",
+          });
+          if (!visitedInTree.has(rightKey)) queue.push(rightKey);
+        }
+      }
+
+      nodeIndex++;
+    }
+
+    if (treeNodes.length > 0) {
+      // Validate BST property
+      const isBST = validateBST(rootKey, treeNodeMap);
+
+      // Determine display name
+      const rootPtrNames = nodePointers.get(rootKey);
+      const displayName = rootPtrNames && rootPtrNames.length > 0
+        ? rootPtrNames[0]
+        : rootKey;
+
+      out.push({
+        id: `tree:${rootKey}`,
+        kind: "tree",
+        name: isBST
+          ? `BST: ${displayName} (Valid BST)`
+          : `Binary Tree: ${displayName}`,
+        nodes: treeNodes,
+        links: treeLinks,
+      });
+    }
+  }
+}
+
+/**
+ * Validates the BST property for a tree rooted at the given key.
+ * For every node u with value V(u):
+ *   - All nodes in u's left subtree have V < V(u)
+ *   - All nodes in u's right subtree have V > V(u)
+ */
+function validateBST(
+  rootKey: string,
+  nodeMap: Map<string, HeapBlock>,
+  minBound: number = -Infinity,
+  maxBound: number = Infinity,
+): boolean {
+  const block = nodeMap.get(rootKey);
+  if (!block) return true; // null node is valid
+
+  const dataVal = block.values[0];
+  if (!dataVal || dataVal.kind !== "scalar") return false;
+  const val = dataVal.value;
+
+  if (val <= minBound || val >= maxBound) return false;
+
+  // Check left subtree
+  const leftVal = block.values[1];
+  if (leftVal && leftVal.kind === "pointer" && leftVal.target && leftVal.target.space === "heap") {
+    const leftKey = formatAddress({ space: "heap", id: leftVal.target.id, slot: 0 });
+    if (!validateBST(leftKey, nodeMap, minBound, val)) return false;
+  }
+
+  // Check right subtree
+  const rightVal = block.values[2];
+  if (rightVal && rightVal.kind === "pointer" && rightVal.target && rightVal.target.space === "heap") {
+    const rightKey = formatAddress({ space: "heap", id: rightVal.target.id, slot: 0 });
+    if (!validateBST(rightKey, nodeMap, val, maxBound)) return false;
+  }
+
+  return true;
+}
+
+/**
+ * Phase 6.4: Detects array-backed binary heap ADTs.
+ *
+ * Heuristics:
+ *   - Array variable named "heap", "minheap", "maxheap", "pq", "priority_queue"
+ *   - Alongside an integer named "heap_size", "heapsize", "size", "n"
+ *   - Checks Min-Heap property (A[parent] <= A[child]) or Max-Heap property (A[parent] >= A[child])
+ *
+ * Does NOT modify existing array/stack/queue items — only upgrades matching arrays.
+ */
+function extractBinaryHeaps(
+  step: ExecutionStep,
+  activeFrame: StackFrame,
+  structures: StructureItem[],
+): void {
+  const allVars: [string, ExecutionValue][] = [
+    ...Object.entries(activeFrame.parameters),
+    ...Object.entries(activeFrame.locals),
+    ...(step.globals ? Object.entries(step.globals) : []),
+  ];
+
+  // Collect integer variables
+  const intVars = new Map<string, number>();
+  for (const [name, val] of allVars) {
+    if (val.kind === "scalar" && (val.type === "int" || val.type === "char")) {
+      intVars.set(name.toLowerCase(), val.value);
+    }
+  }
+
+  // Look for heap size variable
+  const heapSizeKeys = ["heap_size", "heapsize", "size", "n"];
+  let heapSize: number | undefined;
+  let heapSizeKey: string | null = null;
+  for (const key of heapSizeKeys) {
+    if (intVars.has(key)) {
+      heapSize = intVars.get(key);
+      heapSizeKey = key;
+      break;
+    }
+  }
+
+  // Heap array name patterns
+  const heapArrayNames = ["heap", "minheap", "maxheap", "pq", "priority_queue", "min_heap", "max_heap"];
+
+  for (const struct of structures) {
+    if (struct.kind !== "array") continue;
+    if (!struct.id.startsWith("array:")) continue;
+
+    const node = struct.nodes[0];
+    if (!node || node.kind !== "array" || node.slots.length === 0) continue;
+
+    const lower = node.label.toLowerCase();
+    if (!heapArrayNames.some((name) => lower.includes(name))) continue;
+
+    // Determine effective size
+    const effectiveSize = heapSize !== undefined ? Math.min(heapSize, node.slots.length) : node.slots.length;
+    if (effectiveSize <= 0) continue;
+
+    // Extract numeric values from slots
+    const values: number[] = [];
+    let allScalar = true;
+    for (let i = 0; i < effectiveSize; i++) {
+      const slotVal = node.slots[i]?.value;
+      if (slotVal && slotVal.kind === "scalar") {
+        values.push(slotVal.value);
+      } else {
+        allScalar = false;
+        break;
+      }
+    }
+
+    if (!allScalar || values.length < 2) continue;
+
+    // Check min-heap and max-heap properties
+    let isMinHeap = true;
+    let isMaxHeap = true;
+    for (let i = 1; i < values.length; i++) {
+      const parentIdx = Math.floor((i - 1) / 2);
+      if (values[parentIdx] > values[i]) isMinHeap = false;
+      if (values[parentIdx] < values[i]) isMaxHeap = false;
+    }
+
+    if (!isMinHeap && !isMaxHeap) continue;
+
+    // Promote to heap-adt (represented as "tree" kind with heap metadata)
+    const heapType = isMinHeap ? "Min-Heap" : "Max-Heap";
+
+    if (!node.metadata) node.metadata = {};
+    node.metadata.adtKind = "binary-heap";
+    node.metadata.heapType = heapType;
+    node.metadata.heapSize = effectiveSize;
+    node.metadata.heapSizeKey = heapSizeKey;
+
+    // Annotate parent-child relationships on slots
+    for (let i = 0; i < effectiveSize; i++) {
+      const slot = node.slots[i];
+      if (!slot) continue;
+      if (!slot.activeIndexTags) slot.activeIndexTags = [];
+
+      const leftChild = 2 * i + 1;
+      const rightChild = 2 * i + 2;
+      const parentIdx = i > 0 ? Math.floor((i - 1) / 2) : null;
+
+      const annotations: string[] = [];
+      if (parentIdx !== null && parentIdx < effectiveSize) {
+        annotations.push(`P:[${parentIdx}]`);
+      }
+      if (leftChild < effectiveSize) {
+        annotations.push(`L:[${leftChild}]`);
+      }
+      if (rightChild < effectiveSize) {
+        annotations.push(`R:[${rightChild}]`);
+      }
+
+      for (const ann of annotations) {
+        if (!slot.activeIndexTags.includes(ann)) {
+          slot.activeIndexTags.push(ann);
+        }
+      }
+    }
+
+    struct.name = `${heapType}: ${node.label}`;
   }
 }

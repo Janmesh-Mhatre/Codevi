@@ -14,6 +14,7 @@ import {
   getMarkerForColor,
   orderHeapBlocks,
 } from "../../visualization/connectors/connectorRouting";
+import { detectPointerViewTrees } from "./pointerViewTreeLayout";
 import type { PointerRelationship, PointerViewVariable, HeapBlock, ExecutionValue } from "../../execution/models/executionTypes";
 
 /** Layout constants */
@@ -26,8 +27,85 @@ const HEAP_NODE_H = 56;
 const COL_GAP = 200;
 const ROW_GAP = 16;
 const PAD = 24;
+const TOP_PAD = 42;
 const NULL_NODE_W = 64;
 const NULL_NODE_H = 28;
+const STACK_TO_HEAP_COLOR = "#818cf8";
+
+/**
+ * Simple, direct routing for Stack -> Heap connectors with ONE controlled bend.
+ * Eliminates giant loops and detours while safely avoiding passing through obstacle heap cards.
+ */
+function routeStackToHeap(
+  x1: number,
+  y1: number,
+  targetNode: { x: number; y: number; w: number; h: number; b: HeapBlock },
+  allHeapNodes: { x: number; y: number; w: number; h: number; b: HeapBlock }[],
+  stackIdx: number,
+): string {
+  const x2 = targetNode.x;
+  const y2 = targetNode.y + targetNode.h / 2;
+
+  // Find obstacle heap cards strictly positioned between stack right edge and target card left edge
+  // that would intersect a direct horizontal/gentle path.
+  const obstacles = allHeapNodes.filter((n) => {
+    if (n.b.address.id === targetNode.b.address.id) return false;
+    const isToLeft = n.x + n.w <= targetNode.x - 5 && n.x >= x1;
+    const cardTop = n.y;
+    const cardBottom = n.y + n.h;
+    const minPathY = Math.min(y1, y2) - 4;
+    const maxPathY = Math.max(y1, y2) + 4;
+    return isToLeft && cardTop < maxPathY && cardBottom > minPathY;
+  });
+
+  // CASE 1: Clear path without any obstacle cards (e.g. root->H001, n5->H002, n3->H004, all linked lists)
+  // Direct smooth horizontal cubic Bézier curve
+  if (obstacles.length === 0) {
+    const dx = x2 - x1;
+    const cp = Math.max(30, dx * 0.45);
+    return `M ${x1} ${y1} C ${x1 + cp} ${y1}, ${x2 - cp} ${y2}, ${x2} ${y2}`;
+  }
+
+  // CASE 2: Obstacles exist along the direct path.
+  // Use ONE controlled bend that routes either above or below the obstacles directly to the target.
+  const minObsY = Math.min(...obstacles.map((o) => o.y));
+  const maxObsY = Math.max(...obstacles.map((o) => o.y + o.h));
+  const turnX = Math.max(x1 + 30, x2 - 28);
+  const cpBend = Math.min(22, (x2 - turnX) * 0.7);
+
+  // Subcase 2A: Stack anchor is already above all obstacle cards (e.g. n15, n7)
+  // Travel horizontally at y1 (safely above obstacles), then one controlled bend down into target.
+  if (y1 <= minObsY - 6) {
+    return `M ${x1} ${y1} L ${turnX} ${y1} C ${turnX + cpBend} ${y1}, ${x2 - cpBend} ${y2}, ${x2} ${y2}`;
+  }
+
+  // Subcase 2B: Stack anchor is already below all obstacle cards (e.g. n20)
+  // Travel horizontally at y1 (safely below obstacles), then one controlled bend up into target.
+  if (y1 >= maxObsY + 6) {
+    return `M ${x1} ${y1} L ${turnX} ${y1} C ${turnX + cpBend} ${y1}, ${x2 - cpBend} ${y2}, ${x2} ${y2}`;
+  }
+
+  // Subcase 2C: Stack anchor is at intermediate height overlapping obstacles (e.g. n12)
+  // Shift vertically in the clear stack corridor (x1 to x1 + 35) to a clean bypass lane above or below,
+  // then travel horizontally straight to target card and bend into anchor.
+  const distToTop = y1 - minObsY;
+  const distToBottom = maxObsY - y1;
+  const routeAbove = distToTop <= distToBottom;
+  const laneOffset = (stackIdx % 3) * 6;
+  const bypassY = routeAbove
+    ? minObsY - 14 - laneOffset
+    : maxObsY + 14 + laneOffset;
+
+  const laneX = x1 + 24;
+  const cpLane = 12;
+
+  return (
+    `M ${x1} ${y1} ` +
+    `C ${x1 + cpLane} ${y1}, ${laneX - 6} ${bypassY}, ${laneX + cpLane} ${bypassY} ` +
+    `L ${turnX} ${bypassY} ` +
+    `C ${turnX + cpBend} ${bypassY}, ${x2 - cpBend} ${y2}, ${x2} ${y2}`
+  );
+}
 
 /** Derive a short display label for a pointer's value */
 function ptrLabel(rel: PointerRelationship): string {
@@ -99,40 +177,113 @@ export function PointerViewPanel() {
   }
 
   // ------ LAYOUT COMPUTATION ------
-  // Stack column: one node per variable
+  // Stack column: one node per variable, starting below TOP_PAD
   const stackNodes: { x: number; y: number; w: number; h: number; v: PointerViewVariable }[] = [];
-  let stackY = PAD + 20; // leave room for column label
+  let stackY = TOP_PAD + 26; // leave generous room for STACK column label and breathing room
   for (const v of stackVariables) {
     const h = v.isArray ? ARRAY_HEADER_H + NODE_H : NODE_H;
     stackNodes.push({ x: PAD, y: stackY, w: NODE_W, h, v });
     stackY += h + ROW_GAP;
   }
 
-  // Heap column: order according to actual next pointers & traversal, followed by remaining active, then freed at bottom
-  const orderedBlocks = orderHeapBlocks(heapBlocks, relationships, stackVariables);
+  // Heap column:
   const heapX = PAD + NODE_W + COL_GAP;
+  const orderedBlocks = orderHeapBlocks(heapBlocks, relationships, stackVariables);
+
+  // Detect binary tree / BST structures in Pointer View
+  const treeLayout = detectPointerViewTrees(
+    heapBlocks,
+    relationships,
+    stackVariables,
+    heapX,
+    TOP_PAD + 26,
+  );
+
   const heapNodes: { x: number; y: number; w: number; h: number; b: HeapBlock }[] = [];
-  let heapY = PAD + 20;
+  let heapY = TOP_PAD + 26;
   let freedDividerY: number | null = null;
 
-  for (const b of orderedBlocks) {
-    if (!b.active && freedDividerY === null && heapNodes.length > 0) {
-      heapY += 10;
-      freedDividerY = heapY;
-      heapY += 26;
+  if (treeLayout.detectedTrees.length > 0) {
+    // 1. Place hierarchical tree nodes
+    for (const placed of treeLayout.allPlacedTreeNodes) {
+      heapNodes.push({
+        x: placed.x,
+        y: placed.y,
+        w: placed.w,
+        h: placed.h,
+        b: placed.b,
+      });
     }
-    heapNodes.push({ x: heapX, y: heapY, w: HEAP_NODE_W, h: HEAP_NODE_H, b });
-    heapY += HEAP_NODE_H + ROW_GAP;
+
+    // 2. Place any remaining active heap blocks that are not part of any tree
+    let extraHeapY = treeLayout.maxY + ROW_GAP + 10;
+    const remainingActive = orderedBlocks.filter(
+      (b) => b.active && !treeLayout.treeBlockIds.has(b.address.id),
+    );
+    for (const b of remainingActive) {
+      heapNodes.push({ x: heapX, y: extraHeapY, w: HEAP_NODE_W, h: HEAP_NODE_H, b });
+      extraHeapY += HEAP_NODE_H + ROW_GAP;
+    }
+
+    // 3. Place freed heap blocks at the bottom with a divider
+    const freedBlocks = orderedBlocks.filter((b) => !b.active);
+    if (freedBlocks.length > 0) {
+      extraHeapY += 10;
+      freedDividerY = extraHeapY;
+      extraHeapY += 26;
+      for (const b of freedBlocks) {
+        heapNodes.push({ x: heapX, y: extraHeapY, w: HEAP_NODE_W, h: HEAP_NODE_H, b });
+        extraHeapY += HEAP_NODE_H + ROW_GAP;
+      }
+    }
+    heapY = extraHeapY;
+  } else {
+    // Linked-List & generic heap layout: preserved exactly
+    for (const b of orderedBlocks) {
+      if (!b.active && freedDividerY === null && heapNodes.length > 0) {
+        heapY += 10;
+        freedDividerY = heapY;
+        heapY += 26;
+      }
+      heapNodes.push({ x: heapX, y: heapY, w: HEAP_NODE_W, h: HEAP_NODE_H, b });
+      heapY += HEAP_NODE_H + ROW_GAP;
+    }
   }
 
-  // NULL target (if any pointers are NULL) — positioned at the centre of stack and heap
-  const hasNull = relationships.some((r) => r.status === "null");
+  // Heap area bounds (for SVG canvas sizing)
+  const heapMaxX = heapNodes.length > 0 ? Math.max(...heapNodes.map((n) => n.x + n.w)) : heapX + HEAP_NODE_W;
+
+  // HEAP heading alignment:
+  // Centered above the tree root for tree structures, or centered above the heap column
+  // for linked lists, stacks, queues, and generic heap structures.
+  // Never shifts based on pointer routing lanes, extra non-tree nodes, or SVG bounding box.
+  const firstTree = treeLayout.detectedTrees[0];
+  const treeRootPos = firstTree ? firstTree.placedNodes.get(firstTree.rootId) : undefined;
+  const heapCenterX =
+    treeRootPos
+      ? Math.round(treeRootPos.x + HEAP_NODE_W / 2)
+      : Math.round(heapX + HEAP_NODE_W / 2);
+
+  // NULL target (if any non-tree pointers are NULL) — positioned at the centre of stack and heap
+  const hasCentralNull = relationships.some((r) => {
+    if (r.status !== "null") return false;
+    if (r.pointerAddress?.space === "heap" && treeLayout.treeBlockIds.has(r.pointerAddress.id)) {
+      return false;
+    }
+    if (r.pointerName.startsWith("H")) {
+      const match = r.pointerName.match(/^H(\d+)/);
+      if (match && treeLayout.treeBlockIds.has(parseInt(match[1], 10))) {
+        return false;
+      }
+    }
+    return true;
+  });
   const nullNodeX = PAD + NODE_W + COL_GAP / 2 - NULL_NODE_W / 2;
   const nullNodeY = Math.max(stackY, heapY) + 8;
 
-  // SVG dimensions: ensure generous width for outer circular routes and NULL marker
-  const svgW = heapX + HEAP_NODE_W + 150;
-  const svgH = Math.max(stackY, heapY, hasNull ? nullNodeY + NULL_NODE_H + PAD : 0) + PAD + 30;
+  // SVG dimensions: ensure generous width and height for wide trees, circular routes, and NULL marker
+  const svgW = Math.max(heapMaxX + 160, treeLayout.maxX + 160);
+  const svgH = Math.max(stackY, heapY, hasCentralNull ? nullNodeY + NULL_NODE_H + PAD : 0) + PAD + 30;
 
   // ------ ARROW COMPUTATION ------
   type Arrow = {
@@ -184,6 +335,10 @@ export function PointerViewPanel() {
       seenConnectorKeys.add(connKey);
 
       if (rel.status === "null") {
+        // If this heap node is part of a detected tree, skip the distant central NULL box (handled by tree local NULL indicators)
+        if (treeLayout.treeBlockIds.has(srcHeapNode.b.address.id)) {
+          continue;
+        }
         // Arrow from heap node to central NULL node
         arrows.push({
           kind: "heap-to-null",
@@ -201,6 +356,14 @@ export function PointerViewPanel() {
       // Heap-to-heap connection
       if (rel.targetRegion === "heap" && rel.targetAddress) {
         const tgtHeapNode = heapNodes.find((n) => n.b.address.id === rel.targetAddress!.id);
+        if (
+          tgtHeapNode &&
+          treeLayout.treeBlockIds.has(srcHeapNode.b.address.id) &&
+          treeLayout.treeBlockIds.has(tgtHeapNode.b.address.id)
+        ) {
+          // Tree hierarchy branches are rendered with specialized tree connectors
+          continue;
+        }
         if (tgtHeapNode) {
           const srcIdx = heapNodes.indexOf(srcHeapNode);
           const tgtIdx = heapNodes.indexOf(tgtHeapNode);
@@ -286,13 +449,17 @@ export function PointerViewPanel() {
     if (rel.targetRegion === "heap" && rel.targetAddress) {
       const heapNode = heapNodes.find((n) => n.b.address.id === rel.targetAddress!.id);
       if (heapNode) {
+        const stackIdx = stackArrowCount++;
+        const customPath = routeStackToHeap(x1, y1, heapNode, heapNodes, stackIdx);
         arrows.push({
           kind: "stack-to-heap",
           x1, y1,
           x2: heapNode.x, y2: heapNode.y + heapNode.h / 2,
-          color: statusColor(rel.status),
+          color: rel.status === "valid" ? STACK_TO_HEAP_COLOR : statusColor(rel.status),
           dash: statusDash(rel.status),
           label: rel.pointerName,
+          stackIndex: stackIdx,
+          customPath,
         });
         continue;
       }
@@ -358,21 +525,184 @@ export function PointerViewPanel() {
             <marker id="arrow-pink" viewBox="0 0 10 6" refX="9" refY="3" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
               <path d="M0,0 L10,3 L0,6 Z" fill="#f472b6" />
             </marker>
+            <marker id="arrow-sky" viewBox="0 0 10 6" refX="9" refY="3" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0,0 L10,3 L0,6 Z" fill="#38bdf8" />
+            </marker>
+            <marker id="arrow-amber" viewBox="0 0 10 6" refX="9" refY="3" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0,0 L10,3 L0,6 Z" fill="#f59e0b" />
+            </marker>
+            <marker id="arrow-stack-heap" viewBox="0 0 10 6" refX="9" refY="3" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0,0 L10,3 L0,6 Z" fill="#818cf8" />
+            </marker>
           </defs>
 
           {/* Column labels */}
-          <text x={PAD} y={PAD + 10} fill="var(--color-accent)" fontSize="11" fontWeight="600" letterSpacing="0.08em">
+          <text
+            x={PAD + NODE_W / 2}
+            y={TOP_PAD}
+            fill="var(--color-accent)"
+            fontSize="11"
+            fontWeight="600"
+            letterSpacing="0.08em"
+            textAnchor="middle"
+          >
             STACK
           </text>
           {heapBlocks.length > 0 && (
-            <text x={heapX} y={PAD + 10} fill="var(--color-active)" fontSize="11" fontWeight="600" letterSpacing="0.08em">
+            <text
+              x={heapCenterX}
+              y={TOP_PAD}
+              fill="var(--color-active)"
+              fontSize="11"
+              fontWeight="600"
+              letterSpacing="0.08em"
+              textAnchor="middle"
+            >
               HEAP
             </text>
           )}
 
 
 
-          {/* Stack variable nodes */}
+          {/* NULL node */}
+          {hasCentralNull && (
+            <g>
+              <rect
+                x={nullNodeX} y={nullNodeY} width={NULL_NODE_W} height={NULL_NODE_H}
+                rx={4}
+                fill="var(--color-surface)"
+                stroke="var(--color-fg-muted)"
+                strokeWidth={1}
+                strokeDasharray="4 3"
+              />
+              <text
+                x={nullNodeX + NULL_NODE_W / 2} y={nullNodeY + NULL_NODE_H / 2 + 4}
+                fill="var(--color-fg-muted)" fontSize="12" fontWeight="600"
+                fontFamily="var(--font-mono)" textAnchor="middle"
+              >
+                NULL
+              </text>
+            </g>
+          )}
+
+          {/* Tree branch connectors (rendered behind cards) */}
+          {treeLayout.detectedTrees.map((tree) => (
+            <g key={`tree-branches-${tree.rootId}`} className="tree-connectors">
+              {tree.childLinks.map((link) => {
+                const color = link.isLeft ? "var(--color-accent)" : "var(--color-active)";
+                const markerId = link.isLeft ? "arrow-valid" : "arrow-active";
+                return (
+                  <path
+                    key={`tree-branch-${link.parentId}-${link.childId}-${link.isLeft ? "L" : "R"}`}
+                    d={link.pathD}
+                    className={`tree-branch ${link.isLeft ? "tree-branch-left" : "tree-branch-right"}`}
+                    fill="none"
+                    stroke={color}
+                    strokeWidth={1.8}
+                    markerEnd={`url(#${markerId})`}
+                    opacity={0.85}
+                  >
+                    <animate
+                      attributeName="stroke-dashoffset"
+                      values="0;0"
+                      dur="1.5s"
+                      repeatCount="indefinite"
+                    />
+                  </path>
+                );
+              })}
+            </g>
+          ))}
+
+          {/* Arrows (rendered behind cards, collision-free for stack-to-heap) */}
+          {arrows.map((a, i) => {
+            const markerId =
+              a.kind === "stack-to-heap" && a.color === STACK_TO_HEAP_COLOR
+                ? "arrow-stack-heap"
+                : getMarkerForColor(a.color);
+
+            let pathD: string;
+            if (a.customPath) {
+              pathD = a.customPath;
+            } else if (a.kind === "stack-to-stack") {
+              const idx = a.stackIndex ?? 0;
+              pathD = routeOutwardLoop(a.x1, a.y1, a.x2, a.y2, idx);
+            } else if (a.kind === "heap-to-heap") {
+              const idx = a.heapIndex ?? 0;
+              pathD = routeOutwardLoop(a.x1, a.y1, a.x2, a.y2, idx);
+            } else if (a.kind === "heap-to-null") {
+              const dx = Math.abs(a.x1 - a.x2);
+              const cp = Math.max(30, dx * 0.4);
+              pathD = `M ${a.x1} ${a.y1} C ${a.x1 - cp} ${a.y1}, ${a.x2 + cp} ${a.y2}, ${a.x2} ${a.y2}`;
+            } else {
+              // Existing stack-to-heap and null routing - PRESERVED EXACTLY via centralized routeBezier
+              pathD = routeBezier(a.x1, a.y1, a.x2, a.y2);
+            }
+
+            return (
+              <path
+                key={i}
+                d={pathD}
+                fill="none"
+                stroke={a.color}
+                strokeWidth={1.5}
+                strokeDasharray={a.dash}
+                markerEnd={`url(#${markerId})`}
+                opacity={0.85}
+              >
+                <animate
+                  attributeName="stroke-dashoffset"
+                  values={a.dash ? "20;0" : "0;0"}
+                  dur="1.5s"
+                  repeatCount="indefinite"
+                />
+              </path>
+            );
+          })}
+
+          {/* Tree local NULL indicators */}
+          {treeLayout.detectedTrees.map((tree) => (
+            <g key={`tree-nulls-${tree.rootId}`} className="tree-null-indicators">
+              {tree.nullMarkers.map((m, mIdx) => (
+                <g key={`tree-null-${m.parentId}-${m.isLeft ? "L" : "R"}-${mIdx}`} className="tree-null-marker">
+                  <line
+                    x1={m.x}
+                    y1={m.y - 6}
+                    x2={m.x}
+                    y2={m.y + 6}
+                    stroke="var(--color-fg-muted)"
+                    strokeWidth={1.2}
+                    strokeDasharray="2 2"
+                  />
+                  <rect
+                    x={m.x - 14}
+                    y={m.y + 6}
+                    width={28}
+                    height={14}
+                    rx={3}
+                    fill="var(--color-surface)"
+                    stroke="var(--color-fg-muted)"
+                    strokeWidth={0.8}
+                    strokeDasharray="2 2"
+                    opacity={0.85}
+                  />
+                  <text
+                    x={m.x}
+                    y={m.y + 16}
+                    fill="var(--color-fg-muted)"
+                    fontSize={8}
+                    fontWeight="600"
+                    fontFamily="var(--font-mono)"
+                    textAnchor="middle"
+                  >
+                    NULL
+                  </text>
+                </g>
+              ))}
+            </g>
+          ))}
+
+          {/* Stack variable nodes (rendered on top of connectors) */}
           {stackNodes.map(({ x, y, w, h, v }) => {
             const isPointer = v.value.kind === "pointer";
             const isSelected = selected === v.name;
@@ -411,7 +741,7 @@ export function PointerViewPanel() {
                 {/* Value */}
                 <text
                   x={x + 8} y={y + 30}
-                  fill={isPointer ? statusColor(rel?.status ?? "valid") : "var(--color-fg-muted)"}
+                  fill={isPointer && rel?.targetRegion === "heap" && rel?.status === "valid" ? STACK_TO_HEAP_COLOR : isPointer ? statusColor(rel?.status ?? "valid") : "var(--color-fg-muted)"}
                   fontSize="10" fontFamily="var(--font-mono)"
                 >
                   {isPointer ? ptrLabel(rel!) : formatExecutionValue(v.value)}
@@ -465,7 +795,7 @@ export function PointerViewPanel() {
                 {isPointer && (
                   <circle
                     cx={x + w} cy={y + h / 2} r={4}
-                    fill={statusColor(rel?.status ?? "valid")}
+                    fill={rel?.targetRegion === "heap" && rel?.status === "valid" ? STACK_TO_HEAP_COLOR : statusColor(rel?.status ?? "valid")}
                     stroke="var(--color-surface-raised)"
                     strokeWidth={1.5}
                   />
@@ -474,32 +804,12 @@ export function PointerViewPanel() {
             );
           })}
 
-          {/* NULL node */}
-          {hasNull && (
-            <g>
-              <rect
-                x={nullNodeX} y={nullNodeY} width={NULL_NODE_W} height={NULL_NODE_H}
-                rx={4}
-                fill="var(--color-surface)"
-                stroke="var(--color-fg-muted)"
-                strokeWidth={1}
-                strokeDasharray="4 3"
-              />
-              <text
-                x={nullNodeX + NULL_NODE_W / 2} y={nullNodeY + NULL_NODE_H / 2 + 4}
-                fill="var(--color-fg-muted)" fontSize="12" fontWeight="600"
-                fontFamily="var(--font-mono)" textAnchor="middle"
-              >
-                NULL
-              </text>
-            </g>
-          )}
-
-          {/* Heap block nodes */}
+          {/* Heap block nodes (rendered on top of connectors) */}
           {heapNodes.map(({ x, y, w, h, b }, idx) => {
             const addrStr = formatAddress(b.address);
             const borderColor = b.active ? "var(--color-active)" : "var(--color-danger)";
             const isFirstFreed = !b.active && (idx === 0 || heapNodes[idx - 1].b.active);
+            const rootTree = treeLayout.detectedTrees.find((t) => t.rootId === b.address.id);
             return (
               <Fragment key={addrStr}>
                 {isFirstFreed && freedDividerY !== null && (
@@ -527,6 +837,53 @@ export function PointerViewPanel() {
                   </g>
                 )}
                 <g>
+                {/* Active pointer tags pointing to this heap node */}
+                {(() => {
+                  const pointingVars = stackVariables
+                    .filter(
+                      (v) =>
+                        v.value.kind === "pointer" &&
+                        v.value.target?.space === "heap" &&
+                        v.value.target.id === b.address.id,
+                    )
+                    .map((v) => v.name);
+                  if (pointingVars.length === 0) return null;
+                  return (
+                    <g className="active-pointer-tags">
+                      {pointingVars.map((name, pIdx) => {
+                        const tagW = Math.max(48, name.length * 7 + 16);
+                        const tagX = x + 8 + pIdx * (tagW + 4);
+                        const tagY = y - 16;
+                        return (
+                          <g key={name} className="active-pointer-tag">
+                            <rect
+                              x={tagX}
+                              y={tagY}
+                              width={tagW}
+                              height={13}
+                              rx={3}
+                              fill="var(--color-surface-raised)"
+                              stroke="var(--color-active)"
+                              strokeWidth={1}
+                            />
+                            <text
+                              x={tagX + tagW / 2}
+                              y={tagY + 9.5}
+                              fill="var(--color-active)"
+                              fontSize={8.5}
+                              fontWeight="600"
+                              fontFamily="var(--font-mono)"
+                              textAnchor="middle"
+                            >
+                              {name} ▾
+                            </text>
+                          </g>
+                        );
+                      })}
+                    </g>
+                  );
+                })()}
+
                 <rect
                   x={x} y={y} width={w} height={h} rx={6}
                   fill={b.active ? "color-mix(in srgb, var(--color-active) 8%, var(--color-surface-raised))" : "color-mix(in srgb, var(--color-danger) 8%, var(--color-surface-raised))"}
@@ -535,13 +892,44 @@ export function PointerViewPanel() {
                   strokeDasharray={b.active ? undefined : "6 4"}
                   opacity={0.95}
                 />
-                {/* Address & status */}
+                {/* Address & status / inside BST badge */}
                 <text x={x + 8} y={y + 15} fill={borderColor} fontSize="12" fontWeight="600" fontFamily="var(--font-mono)">
                   {addrStr}
                 </text>
-                <text x={x + w - 6} y={y + 14} fill={borderColor} fontSize="9" fontWeight="500" textAnchor="end" fontFamily="var(--font-mono)">
-                  {b.active ? "active" : "freed"}
-                </text>
+                {rootTree ? (
+                  <g className="tree-status-badge">
+                    <rect
+                      x={x + w - 78}
+                      y={y + 5}
+                      width={72}
+                      height={14}
+                      rx={7}
+                      fill={rootTree.isBST ? "color-mix(in srgb, #34d399 15%, var(--color-surface-raised))" : "color-mix(in srgb, #f59e0b 15%, var(--color-surface-raised))"}
+                      stroke={rootTree.isBST ? "#34d399" : "#f59e0b"}
+                      strokeWidth={0.8}
+                    />
+                    <circle
+                      cx={x + w - 71}
+                      cy={y + 12}
+                      r={2.5}
+                      fill={rootTree.isBST ? "#34d399" : "#f59e0b"}
+                    />
+                    <text
+                      x={x + w - 64}
+                      y={y + 15}
+                      fill={rootTree.isBST ? "#34d399" : "#f59e0b"}
+                      fontSize={8.5}
+                      fontWeight="600"
+                      fontFamily="var(--font-mono)"
+                    >
+                      {rootTree.isBST ? "Valid BST" : "BST: Invalid"}
+                    </text>
+                  </g>
+                ) : (
+                  <text x={x + w - 6} y={y + 14} fill={borderColor} fontSize="9" fontWeight="500" textAnchor="end" fontFamily="var(--font-mono)">
+                    {b.active ? "active" : "freed"}
+                  </text>
+                )}
                 {/* Origin & size */}
                 <text x={x + 8} y={y + 30} fill="var(--color-fg-muted)" fontSize="10" fontFamily="var(--font-mono)">
                   {b.origin} · {b.byteSize}B · {b.slotCount} slot{b.slotCount > 1 ? "s" : ""}
@@ -554,6 +942,33 @@ export function PointerViewPanel() {
                 {/* Pointer indicator dots on heap cards with pointer fields */}
                 {b.values.map((v, slotIdx) => {
                   if (v.kind !== "pointer") return null;
+                  const isTreeBlock = treeLayout.treeBlockIds.has(b.address.id);
+                  if (isTreeBlock) {
+                    const isLeft = slotIdx === 1;
+                    const isRight = slotIdx === 2;
+                    const dotX = isLeft ? x + w * 0.35 : isRight ? x + w * 0.65 : x + w;
+                    const dotY = isLeft || isRight ? y + h : y + 44;
+                    const dotColor = isLeft
+                      ? v.target === null
+                        ? "var(--color-fg-muted)"
+                        : "var(--color-accent)"
+                      : isRight
+                      ? v.target === null
+                        ? "var(--color-fg-muted)"
+                        : "var(--color-active)"
+                      : "var(--color-accent)";
+                    return (
+                      <circle
+                        key={slotIdx}
+                        cx={dotX}
+                        cy={dotY}
+                        r={3.5}
+                        fill={dotColor}
+                        stroke="var(--color-surface-raised)"
+                        strokeWidth={1.5}
+                      />
+                    );
+                  }
                   const dotY = slotIdx === 2 ? y + 34 : y + 44;
                   const field = slotIdx === 1 ? "next" : slotIdx === 2 ? "prev" : `slot${slotIdx}`;
                   const dotColor = getFieldColor(field, v.target === null ? "null" : "valid");
@@ -573,49 +988,6 @@ export function PointerViewPanel() {
             </Fragment>
           );
         })}
-
-          {/* Arrows */}
-          {arrows.map((a, i) => {
-            const markerId = getMarkerForColor(a.color);
-
-            let pathD: string;
-            if (a.customPath) {
-              pathD = a.customPath;
-            } else if (a.kind === "stack-to-stack") {
-              const idx = a.stackIndex ?? 0;
-              pathD = routeOutwardLoop(a.x1, a.y1, a.x2, a.y2, idx);
-            } else if (a.kind === "heap-to-heap") {
-              const idx = a.heapIndex ?? 0;
-              pathD = routeOutwardLoop(a.x1, a.y1, a.x2, a.y2, idx);
-            } else if (a.kind === "heap-to-null") {
-              const dx = Math.abs(a.x1 - a.x2);
-              const cp = Math.max(30, dx * 0.4);
-              pathD = `M ${a.x1} ${a.y1} C ${a.x1 - cp} ${a.y1}, ${a.x2 + cp} ${a.y2}, ${a.x2} ${a.y2}`;
-            } else {
-              // Existing stack-to-heap and null routing - PRESERVED EXACTLY via centralized routeBezier
-              pathD = routeBezier(a.x1, a.y1, a.x2, a.y2);
-            }
-
-            return (
-              <path
-                key={i}
-                d={pathD}
-                fill="none"
-                stroke={a.color}
-                strokeWidth={1.5}
-                strokeDasharray={a.dash}
-                markerEnd={`url(#${markerId})`}
-                opacity={0.8}
-              >
-                <animate
-                  attributeName="stroke-dashoffset"
-                  values={a.dash ? "20;0" : "0;0"}
-                  dur="1.5s"
-                  repeatCount="indefinite"
-                />
-              </path>
-            );
-          })}
         </svg>
       </div>
 

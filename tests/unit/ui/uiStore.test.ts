@@ -99,10 +99,42 @@ describe("UIStore workspace layout & panel resizing", () => {
     const state = useUIStore.getState();
     expect(state.rightPanelWidth).toBe(420);
     expect(state.isRightPanelVisible).toBe(true);
+    expect(state.isMainViewsVisible).toBe(true);
+    expect(state.isVariablesVisible).toBe(true);
+    expect(state.isMemoryVisible).toBe(true);
     expect(state.rightPanelBottomHeight).toBe(256);
     expect(state.consoleHeight).toBe(160);
     expect(state.isConsoleVisible).toBe(true);
     expect(state.isExplanationVisible).toBe(true);
+  });
+
+  it("toggles and sets granular panel visibility independently", () => {
+    // Initial state
+    expect(useUIStore.getState().isMainViewsVisible).toBe(true);
+    expect(useUIStore.getState().isVariablesVisible).toBe(true);
+    expect(useUIStore.getState().isMemoryVisible).toBe(true);
+
+    // Toggle Execution Views
+    useUIStore.getState().toggleMainViews();
+    expect(useUIStore.getState().isMainViewsVisible).toBe(false);
+    expect(useUIStore.getState().isVariablesVisible).toBe(true);
+    expect(useUIStore.getState().isMemoryVisible).toBe(true);
+
+    // Toggle Variables
+    useUIStore.getState().toggleVariables();
+    expect(useUIStore.getState().isVariablesVisible).toBe(false);
+
+    // Toggle Memory
+    useUIStore.getState().toggleMemory();
+    expect(useUIStore.getState().isMemoryVisible).toBe(false);
+
+    // Set individually
+    useUIStore.getState().setMainViewsVisible(true);
+    expect(useUIStore.getState().isMainViewsVisible).toBe(true);
+    useUIStore.getState().setVariablesVisible(true);
+    expect(useUIStore.getState().isVariablesVisible).toBe(true);
+    useUIStore.getState().setMemoryVisible(true);
+    expect(useUIStore.getState().isMemoryVisible).toBe(true);
   });
 });
 

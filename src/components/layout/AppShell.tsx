@@ -40,6 +40,9 @@ export function AppShell() {
   const rightPanelWidth = useUIStore((state) => state.rightPanelWidth);
   const setRightPanelWidth = useUIStore((state) => state.setRightPanelWidth);
   const isRightPanelVisible = useUIStore((state) => state.isRightPanelVisible);
+  const isMainViewsVisible = useUIStore((state) => state.isMainViewsVisible);
+  const isVariablesVisible = useUIStore((state) => state.isVariablesVisible);
+  const isMemoryVisible = useUIStore((state) => state.isMemoryVisible);
   const rightPanelBottomHeight = useUIStore((state) => state.rightPanelBottomHeight);
   const setRightPanelBottomHeight = useUIStore((state) => state.setRightPanelBottomHeight);
   const consoleHeight = useUIStore((state) => state.consoleHeight);
@@ -154,50 +157,74 @@ export function AppShell() {
           <CodeEditor />
         </div>
 
-        {isRightPanelVisible && (
-          <>
-            <ResizeHandle
-              direction="vertical"
-              onDragStart={handleRightPanelDragStart}
-              onDrag={handleRightPanelDrag}
-              onReset={() => setRightPanelWidth(420)}
-              onNudge={handleRightPanelNudge}
-              title="Resize editor and right panel • Double-click to reset"
-            />
+        {(() => {
+          const showTopViews = isMainViewsVisible;
+          const showBottomVariables = isVariablesVisible;
+          const showBottomMemory = isMemoryVisible;
+          const showBottomSection = showBottomVariables || showBottomMemory;
+          const shouldRenderRightPanel =
+            isRightPanelVisible && (showTopViews || showBottomSection);
 
-            <div style={{ width: `${rightPanelWidth}px` }} className="flex shrink-0 flex-col min-w-0">
-              <div className="min-h-0 flex-1">
-                <Tabs tabs={TOP_RIGHT_TABS} defaultTabId="ast">
-                  {(activeTabId) => {
-                    if (activeTabId === "ast") return <AstViewerPanel />;
-                    if (activeTabId === "stack") return <StackPanel />;
-                    if (activeTabId === "variable-array-view") return <VariableArrayViewPanel />;
-                    if (activeTabId === "pointer-view") return <PointerViewPanel />;
-                    return <VisualizationPanel />;
-                  }}
-                </Tabs>
-              </div>
+          if (!shouldRenderRightPanel) return null;
 
+          return (
+            <>
               <ResizeHandle
-                direction="horizontal"
-                onDragStart={handleRightBottomDragStart}
-                onDrag={handleRightBottomDrag}
-                onReset={() => setRightPanelBottomHeight(256)}
-                onNudge={handleRightBottomNudge}
-                title="Resize visualization and variables/memory • Double-click to reset"
+                direction="vertical"
+                onDragStart={handleRightPanelDragStart}
+                onDrag={handleRightPanelDrag}
+                onReset={() => setRightPanelWidth(420)}
+                onNudge={handleRightPanelNudge}
+                title="Resize editor and right panel • Double-click to reset"
               />
 
-              <div style={{ height: `${rightPanelBottomHeight}px` }} className="flex shrink-0">
-                <div className="min-w-0 flex-1 border-r border-border">
-                  <VariablePanel />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <MemoryPanel />
-                </div>
+              <div style={{ width: `${rightPanelWidth}px` }} className="flex shrink-0 flex-col min-w-0">
+                {showTopViews && (
+                  <div className={`min-h-0 ${showBottomSection ? "flex-1" : "h-full flex-1"}`}>
+                    <Tabs tabs={TOP_RIGHT_TABS} defaultTabId="ast">
+                      {(activeTabId) => {
+                        if (activeTabId === "ast") return <AstViewerPanel />;
+                        if (activeTabId === "stack") return <StackPanel />;
+                        if (activeTabId === "variable-array-view") return <VariableArrayViewPanel />;
+                        if (activeTabId === "pointer-view") return <PointerViewPanel />;
+                        return <VisualizationPanel />;
+                      }}
+                    </Tabs>
+                  </div>
+                )}
+
+                {showTopViews && showBottomSection && (
+                  <ResizeHandle
+                    direction="horizontal"
+                    onDragStart={handleRightBottomDragStart}
+                    onDrag={handleRightBottomDrag}
+                    onReset={() => setRightPanelBottomHeight(256)}
+                    onNudge={handleRightBottomNudge}
+                    title="Resize visualization and variables/memory • Double-click to reset"
+                  />
+                )}
+
+                {showBottomSection && (
+                  <div
+                    style={showTopViews ? { height: `${rightPanelBottomHeight}px` } : undefined}
+                    className={`flex shrink-0 min-h-0 ${showTopViews ? "" : "h-full flex-1"}`}
+                  >
+                    {showBottomVariables && (
+                      <div className={`min-w-0 flex-1 ${showBottomMemory ? "border-r border-border" : ""}`}>
+                        <VariablePanel />
+                      </div>
+                    )}
+                    {showBottomMemory && (
+                      <div className="min-w-0 flex-1">
+                        <MemoryPanel />
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
-            </div>
-          </>
-        )}
+            </>
+          );
+        })()}
       </div>
 
       <ExplanationPanel />
