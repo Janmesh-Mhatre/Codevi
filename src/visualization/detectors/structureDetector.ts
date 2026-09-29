@@ -1,5 +1,5 @@
 import type { ExecutionStep, ExecutionValue, HeapBlock, StackFrame } from "../../execution/models/executionTypes";
-import { formatAddress } from "../../memory/memory";
+import { formatAddress, type Address } from "../../memory/memory";
 import type {
   StructureGraph,
   StructureItem,
@@ -18,11 +18,14 @@ export function extractStructureGraph(step: ExecutionStep | null): StructureGrap
   }
 
   const structures: StructureItem[] = [];
-
-  // 1. Detect Arrays (both in stack frames and multi-slot heap blocks)
   const activeFrame = step.callStack.find((f) => f.isActive) ?? step.callStack[step.callStack.length - 1];
-  if (activeFrame) {
-    extractStackArrays(activeFrame, structures);
+
+  // 1. Detect Arrays (both in globals, stack frames, and multi-slot heap blocks)
+  if (step.globals) {
+    extractGlobalArrays(step.globals, step.globalAddresses, structures);
+  }
+  for (const frame of step.callStack) {
+    extractStackArrays(frame, structures);
   }
 
   // Phase 6.2: Detect Linked Lists
@@ -35,15 +38,11 @@ export function extractStructureGraph(step: ExecutionStep | null): StructureGrap
   extractPointerGraph(step, structures);
 
   // Phase 6.1: annotate array slots with active index tags and bounds cues
-  if (activeFrame) {
-    annotateActiveIndices(activeFrame, structures);
-    annotateBoundsCues(structures);
-  }
+  annotateActiveIndices(step, structures);
+  annotateBoundsCues(structures);
 
-  // Phase 6.3: Detect array-backed Stacks & Queues (upgrades existing array items)
-  if (activeFrame) {
-    extractStacksAndQueues(step, activeFrame, structures);
-  }
+  // Phase 6.3: Detect array-backed and struct-backed Stacks & Queues regardless of declaration scope
+  extractStacksAndQueues(step, structures);
 
   // Phase 6.4: Detect Binary Trees, BSTs, and array-backed Binary Heaps
   extractTrees(step, structures);
@@ -58,6 +57,66 @@ export function extractStructureGraph(step: ExecutionStep | null): StructureGrap
 }
 
 /**
+ * Extracts global array variables into dedicated array structure items.
+ */
+function extractGlobalArrays(
+  globals: Record<string, ExecutionValue>,
+  globalAddresses: Record<string, Address> | undefined,
+  out: StructureItem[],
+): void {
+  for (const [varName, val] of Object.entries(globals)) {
+    if (val.kind === "array") {
+      if (out.some((s) => s.id === `array:${varName}`)) continue;
+      const baseAddr = val.address ?? globalAddresses?.[varName] ?? { space: "stack", id: 0, slot: 0 };
+      const is2D = val.dimensions && val.dimensions.length === 2;
+      const rows = is2D ? val.dimensions![0] : 1;
+      const cols = is2D ? val.dimensions![1] : val.length;
+
+      const slots: StructureSlot[] = val.values.map((elem, i) => {
+        let slotName = `[${i}]`;
+        if (is2D) {
+          const r = Math.floor(i / cols);
+          const c = i % cols;
+          slotName = `[${r}][${c}]`;
+        }
+        return {
+          index: i,
+          name: slotName,
+          value: elem,
+          address: { space: baseAddr.space, id: baseAddr.id, slot: i },
+          highlight: "none",
+        };
+      });
+
+      const node: StructureNode = {
+        id: `global:arr:${varName}`,
+        kind: "array",
+        label: varName,
+        address: baseAddr,
+        type: val.type,
+        slots,
+        highlight: "none",
+        metadata: {
+          scope: "global",
+          length: val.length,
+          dimensions: val.dimensions,
+          rows: is2D ? rows : undefined,
+          cols: is2D ? cols : undefined,
+        },
+      };
+
+      out.push({
+        id: `array:${varName}`,
+        kind: "array",
+        name: `Array: ${varName}`,
+        nodes: [node],
+        links: [],
+      });
+    }
+  }
+}
+
+/**
  * Extracts stack-allocated array variables into dedicated array structure items.
  */
 function extractStackArrays(frame: StackFrame, out: StructureItem[]): void {
@@ -68,6 +127,7 @@ function extractStackArrays(frame: StackFrame, out: StructureItem[]): void {
 
   for (const [varName, val] of allVars) {
     if (val.kind === "array") {
+      if (out.some((s) => s.id === `array:${varName}`)) continue;
       const baseAddr = val.address ?? frame.addresses[varName] ?? { space: "stack", id: 0, slot: 0 };
       const is2D = val.dimensions && val.dimensions.length === 2;
       const rows = is2D ? val.dimensions![0] : 1;
@@ -309,11 +369,13 @@ function extractPointerGraph(step: ExecutionStep, out: StructureItem[]): void {
 /** Phase 6.1: scans all integer/scalar variables in the active frame
  * for values that match valid indices of any array structure, then
  * annotates the corresponding slot with a tag like "i ▾" or "p ➔". */
-function annotateActiveIndices(frame: StackFrame, structures: StructureItem[]): void {
+function annotateActiveIndices(step: ExecutionStep, structures: StructureItem[]): void {
   const allVars: [string, ExecutionValue][] = [
-    ...Object.entries(frame.parameters),
-    ...Object.entries(frame.locals),
+    ...(step.globals ? Object.entries(step.globals) : []),
   ];
+  for (const frame of step.callStack) {
+    allVars.push(...Object.entries(frame.parameters), ...Object.entries(frame.locals));
+  }
 
   // Collect all scalar integer variables as potential index candidates
   const candidates: { name: string; value: number; isPointer: boolean }[] = [];
@@ -624,20 +686,215 @@ function extractLinkedLists(step: ExecutionStep, out: StructureItem[]): void {
  */
 function extractStacksAndQueues(
   step: ExecutionStep,
-  activeFrame: StackFrame,
   structures: StructureItem[],
 ): void {
-  // Collect all scalar integer variables as potential index candidates
+  // Collect all variables across all available scopes:
+  // Globals first, then callStack from outer to inner (so inner frames override globals)
   const allVars: [string, ExecutionValue][] = [
-    ...Object.entries(activeFrame.parameters),
-    ...Object.entries(activeFrame.locals),
     ...(step.globals ? Object.entries(step.globals) : []),
   ];
+  for (const frame of step.callStack) {
+    allVars.push(...Object.entries(frame.parameters), ...Object.entries(frame.locals));
+  }
 
   const intVars = new Map<string, number>();
   for (const [name, val] of allVars) {
     if (val.kind === "scalar" && (val.type === "int" || val.type === "char")) {
       intVars.set(name.toLowerCase(), val.value);
+    }
+  }
+
+  const getScalarVal = (v?: ExecutionValue, fallback: number = -1): number =>
+    v && v.kind === "scalar" && typeof v.value === "number" ? v.value : fallback;
+
+  // --- Struct-backed stack/queue detection (local struct or malloc struct) ---
+  for (const [varName, val] of allVars) {
+    if (val.kind !== "pointer" || !val.target) continue;
+    const lowerType = val.type.toLowerCase();
+    const lowerName = varName.toLowerCase();
+    const isStructStack = lowerType.includes("struct stack") || (lowerType.startsWith("struct") && (lowerName.includes("stack") || lowerName === "s"));
+    const isStructQueue = lowerType.includes("struct queue") || (lowerType.startsWith("struct") && (lowerName.includes("queue") || lowerName === "q"));
+
+    if (isStructStack) {
+      if (val.target.space === "heap") {
+        const block = step.heap.find((b) => b.active && b.address.id === val.target!.id);
+        if (block && block.slotCount >= 2) {
+          const dataCount = block.slotCount - 1;
+          const sTop = getScalarVal(block.values[dataCount], -1);
+          const slots: StructureSlot[] = [];
+          for (let i = 0; i < dataCount; i++) {
+            slots.push({
+              index: i,
+              name: `[${i}]`,
+              value: block.values[i] ?? { kind: "scalar", type: "int", value: 0 },
+              address: { space: "heap", id: val.target.id, slot: i },
+              highlight: "none",
+            });
+          }
+          if (sTop >= 0 && sTop < slots.length) {
+            slots[sTop].activeIndexTags = ["top ▾"];
+          }
+          const addrStr = formatAddress(block.address);
+          const existingIdx = structures.findIndex((s) => s.id === `heap-array:${addrStr}`);
+          if (existingIdx >= 0) structures.splice(existingIdx, 1);
+
+          if (!structures.some((s) => s.id === `struct-stack:${varName}`)) {
+            structures.push({
+              id: `struct-stack:${varName}`,
+              kind: "stack",
+              name: `Stack: ${varName}`,
+              nodes: [{
+                id: `struct-stack:node:${varName}`,
+                kind: "stack",
+                label: `${varName}.data`,
+                address: val.target,
+                type: val.type,
+                slots,
+                highlight: "none",
+                metadata: {
+                  adtKind: "stack",
+                  topIndex: sTop,
+                },
+              }],
+              links: [],
+            });
+          }
+        }
+      } else if (val.target.space === "stack" && val.structValues && val.structValues.length >= 2) {
+        const dataCount = val.structValues.length - 1;
+        const sTop = getScalarVal(val.structValues[dataCount], -1);
+        const slots: StructureSlot[] = [];
+        for (let i = 0; i < dataCount; i++) {
+          slots.push({
+            index: i,
+            name: `[${i}]`,
+            value: val.structValues[i],
+            address: { space: "stack", id: val.target.id, slot: i },
+            highlight: "none",
+          });
+        }
+        if (sTop >= 0 && sTop < slots.length) {
+          slots[sTop].activeIndexTags = ["top ▾"];
+        }
+        if (!structures.some((s) => s.id === `struct-stack:${varName}`)) {
+          structures.push({
+            id: `struct-stack:${varName}`,
+            kind: "stack",
+            name: `Stack: ${varName}`,
+            nodes: [{
+              id: `struct-stack:node:${varName}`,
+              kind: "stack",
+              label: `${varName}.data`,
+              address: val.target,
+              type: val.type,
+              slots,
+              highlight: "none",
+              metadata: {
+                adtKind: "stack",
+                topIndex: sTop,
+              },
+            }],
+            links: [],
+          });
+        }
+      }
+    }
+
+    if (isStructQueue) {
+      if (val.target.space === "heap") {
+        const block = step.heap.find((b) => b.active && b.address.id === val.target!.id);
+        if (block && block.slotCount >= 3) {
+          const dataCount = block.slotCount - 2;
+          const sFront = getScalarVal(block.values[dataCount], 0);
+          const sRear = getScalarVal(block.values[dataCount + 1], -1);
+          const slots: StructureSlot[] = [];
+          for (let i = 0; i < dataCount; i++) {
+            slots.push({
+              index: i,
+              name: `[${i}]`,
+              value: block.values[i] ?? { kind: "scalar", type: "int", value: 0 },
+              address: { space: "heap", id: val.target.id, slot: i },
+              highlight: "none",
+            });
+          }
+          if (sFront >= 0 && sFront < slots.length) {
+            slots[sFront].activeIndexTags = ["front ▾"];
+          }
+          if (sRear >= 0 && sRear < slots.length) {
+            if (!slots[sRear].activeIndexTags) slots[sRear].activeIndexTags = [];
+            slots[sRear].activeIndexTags.push("rear ▾");
+          }
+          const addrStr = formatAddress(block.address);
+          const existingIdx = structures.findIndex((s) => s.id === `heap-array:${addrStr}`);
+          if (existingIdx >= 0) structures.splice(existingIdx, 1);
+
+          if (!structures.some((s) => s.id === `struct-queue:${varName}`)) {
+            structures.push({
+              id: `struct-queue:${varName}`,
+              kind: "queue",
+              name: `Queue: ${varName}`,
+              nodes: [{
+                id: `struct-queue:node:${varName}`,
+                kind: "queue",
+                label: `${varName}.data`,
+                address: val.target,
+                type: val.type,
+                slots,
+                highlight: "none",
+                metadata: {
+                  adtKind: "queue",
+                  frontIndex: sFront,
+                  rearIndex: sRear,
+                },
+              }],
+              links: [],
+            });
+          }
+        }
+      } else if (val.target.space === "stack" && val.structValues && val.structValues.length >= 3) {
+        const dataCount = val.structValues.length - 2;
+        const sFront = getScalarVal(val.structValues[dataCount], 0);
+        const sRear = getScalarVal(val.structValues[dataCount + 1], -1);
+        const slots: StructureSlot[] = [];
+        for (let i = 0; i < dataCount; i++) {
+          slots.push({
+            index: i,
+            name: `[${i}]`,
+            value: val.structValues[i],
+            address: { space: "stack", id: val.target.id, slot: i },
+            highlight: "none",
+          });
+        }
+        if (sFront >= 0 && sFront < slots.length) {
+          slots[sFront].activeIndexTags = ["front ▾"];
+        }
+        if (sRear >= 0 && sRear < slots.length) {
+          if (!slots[sRear].activeIndexTags) slots[sRear].activeIndexTags = [];
+          slots[sRear].activeIndexTags.push("rear ▾");
+        }
+        if (!structures.some((s) => s.id === `struct-queue:${varName}`)) {
+          structures.push({
+            id: `struct-queue:${varName}`,
+            kind: "queue",
+            name: `Queue: ${varName}`,
+            nodes: [{
+              id: `struct-queue:node:${varName}`,
+              kind: "queue",
+              label: `${varName}.data`,
+              address: val.target,
+              type: val.type,
+              slots,
+              highlight: "none",
+              metadata: {
+                adtKind: "queue",
+                frontIndex: sFront,
+                rearIndex: sRear,
+              },
+            }],
+            links: [],
+          });
+        }
+      }
     }
   }
 
@@ -653,16 +910,33 @@ function extractStacksAndQueues(
   if (topVal !== undefined || (frontVal !== undefined && rearVal !== undefined)) {
     for (const struct of structures) {
       if (struct.kind !== "array") continue;
-      // Only promote stack-local arrays (not heap arrays)
+      // Only promote standard array structures (global and stack-allocated, not generic heap arrays)
       if (!struct.id.startsWith("array:")) continue;
 
       const node = struct.nodes[0];
       if (!node || node.kind !== "array" || node.slots.length === 0) continue;
 
       const arrayLen = node.slots.length;
+      const labelLower = node.label.toLowerCase();
 
-      // Stack: if `top` variable exists, and no front+rear, promote to stack
-      if (topVal !== undefined && (frontVal === undefined || rearVal === undefined)) {
+      const isNamedStack = labelLower.includes("stack") || labelLower === "s" || labelLower.includes("stk");
+      const isNamedQueue = labelLower.includes("queue") || labelLower === "q";
+
+      let shouldPromoteStack = false;
+      let shouldPromoteQueue = false;
+
+      if (topVal !== undefined && frontVal !== undefined && rearVal !== undefined) {
+        if (isNamedStack) shouldPromoteStack = true;
+        else if (isNamedQueue) shouldPromoteQueue = true;
+        else shouldPromoteStack = true;
+      } else if (topVal !== undefined) {
+        if (!isNamedQueue) shouldPromoteStack = true;
+      } else if (frontVal !== undefined && rearVal !== undefined) {
+        if (!isNamedStack) shouldPromoteQueue = true;
+      }
+
+      // Stack promotion
+      if (shouldPromoteStack && topVal !== undefined) {
         struct.kind = "stack";
         struct.name = `Stack: ${node.label}`;
         node.kind = "stack";
@@ -684,8 +958,8 @@ function extractStacksAndQueues(
         }
       }
 
-      // Queue: if `front` and `rear` exist, promote to queue
-      if (frontVal !== undefined && rearVal !== undefined) {
+      // Queue promotion
+      if (shouldPromoteQueue && frontVal !== undefined && rearVal !== undefined) {
         struct.kind = "queue";
         struct.name = `Queue: ${node.label}`;
         node.kind = "queue";

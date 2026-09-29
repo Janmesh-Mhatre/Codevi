@@ -27,7 +27,7 @@ export const StructureNodeCard: React.FC<StructureNodeCardProps> = ({
   onSelectSlot,
 }) => {
   const addrStr = formatAddress(node.address);
-  const isArray = node.kind === "array";
+  const isArray = node.kind === "array" || node.kind === "stack" || node.kind === "queue";
   const isLinkedList = node.kind === "linked-list";
   const slotCount = node.slots.length;
   const isHeap = node.address.space === "heap";

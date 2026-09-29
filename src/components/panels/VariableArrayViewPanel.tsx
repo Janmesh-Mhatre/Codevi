@@ -47,12 +47,27 @@ export function VariableArrayViewPanel() {
 
   // Categorize variables into scalars, arrays, stacks, and queues
   const { scalars, arrays, stacks, queues } = useMemo(() => {
-    if (!activeFrame) return { scalars: [], arrays: [], stacks: [], queues: [] };
+    if (!currentStep) return { scalars: [], arrays: [], stacks: [], queues: [] };
 
-    const allVars: [string, ExecutionValue][] = [
-      ...Object.entries(activeFrame.parameters),
-      ...Object.entries(activeFrame.locals),
-    ];
+    const getAddress = (varName: string): Address | undefined => {
+      if (activeFrame?.addresses[varName]) return activeFrame.addresses[varName];
+      for (const frame of currentStep.callStack) {
+        if (frame.addresses[varName]) return frame.addresses[varName];
+      }
+      if (currentStep.globalAddresses?.[varName]) return currentStep.globalAddresses[varName];
+      return undefined;
+    };
+
+    // 1. Gather all variables across all available scopes:
+    // Globals first, then callStack frames from outer to inner (active frame takes precedence)
+    const globalVars: [string, ExecutionValue][] = currentStep.globals
+      ? Object.entries(currentStep.globals)
+      : [];
+    const frameVars: [string, ExecutionValue][] = [];
+    for (const frame of currentStep.callStack) {
+      frameVars.push(...Object.entries(frame.parameters), ...Object.entries(frame.locals));
+    }
+    const allVars = [...globalVars, ...frameVars];
 
     // Collect integer scalar names for heuristic matching
     const intVars = new Map<string, number>();
@@ -68,35 +83,185 @@ export function VariableArrayViewPanel() {
     const frontKey = intVars.has("front") ? "front" : intVars.has("head") ? "head" : "front";
     const rearKey = intVars.has("rear") ? "rear" : intVars.has("tail") ? "tail" : "rear";
 
-    const isStack = topVal !== undefined && (frontVal === undefined || rearVal === undefined);
-    const isQueue = frontVal !== undefined && rearVal !== undefined;
-
     const scalarsList: ScalarEntry[] = [];
     const arraysList: ArrayEntry[] = [];
     const stacksList: StackEntry[] = [];
     const queuesList: QueueEntry[] = [];
 
-    for (const [name, val] of allVars) {
-      const address = activeFrame.addresses[name];
+    // Collect all scalars to display
+    // Active frame scalars take precedence, then globals that are not shadowed
+    const scalarMap = new Map<string, ScalarEntry>();
+    for (const [name, val] of globalVars) {
       if (val.kind === "scalar") {
-        scalarsList.push({ name, value: val, address });
-      } else if (val.kind === "array") {
-        // Determine if this array should be promoted to stack or queue
-        if (isStack) {
-          stacksList.push({ name, value: val, address, topIndex: topVal! });
-        } else if (isQueue) {
-          queuesList.push({ name, value: val, address, frontIndex: frontVal!, rearIndex: rearVal!, frontKey, rearKey });
-        } else {
-          const is2D = Boolean(val.dimensions && val.dimensions.length === 2);
-          const rows = is2D ? val.dimensions![0] : 1;
-          const cols = is2D ? val.dimensions![1] : val.length;
-          arraysList.push({ name, value: val, address, is2D, rows, cols });
+        scalarMap.set(name, { name, value: val, address: getAddress(name) });
+      }
+    }
+    const activeVars = activeFrame ? [...Object.entries(activeFrame.parameters), ...Object.entries(activeFrame.locals)] : [];
+    for (const [name, val] of activeVars) {
+      if (val.kind === "scalar") {
+        scalarMap.set(name, { name, value: val, address: getAddress(name) });
+      }
+    }
+    scalarsList.push(...scalarMap.values());
+
+    const getScalarVal = (v?: ExecutionValue, fallback: number = -1): number =>
+      v && v.kind === "scalar" && typeof v.value === "number" ? v.value : fallback;
+
+    // --- Struct-backed stack/queue detection (local struct or malloc struct) ---
+    for (const [varName, val] of allVars) {
+      if (val.kind !== "pointer" || !val.target) continue;
+      const lowerType = val.type.toLowerCase();
+      const lowerName = varName.toLowerCase();
+      const isStructStack = lowerType.includes("struct stack") || (lowerType.startsWith("struct") && (lowerName.includes("stack") || lowerName === "s"));
+      const isStructQueue = lowerType.includes("struct queue") || (lowerType.startsWith("struct") && (lowerName.includes("queue") || lowerName === "q"));
+
+      if (isStructStack) {
+        if (val.target.space === "heap") {
+          const block = currentStep.heap.find((b) => b.active && b.address.id === val.target!.id);
+          if (block && block.slotCount >= 2) {
+            const dataCount = block.slotCount - 1;
+            const sTop = getScalarVal(block.values[dataCount], -1);
+            const dataVals: ExecutionValue[] = [];
+            for (let i = 0; i < dataCount; i++) {
+              dataVals.push(block.values[i] ?? { kind: "scalar", type: "int", value: 0 });
+            }
+            const dataArrVal: ExecutionValue & { kind: "array" } = {
+              kind: "array",
+              type: `int[${dataCount}]`,
+              address: val.target,
+              length: dataCount,
+              values: dataVals,
+            };
+            if (!stacksList.some((s) => s.name === `${varName}.data`)) {
+              stacksList.push({
+                name: `${varName}.data`,
+                value: dataArrVal,
+                address: val.target,
+                topIndex: sTop,
+              });
+            }
+          }
+        } else if (val.target.space === "stack" && val.structValues && val.structValues.length >= 2) {
+          const dataCount = val.structValues.length - 1;
+          const sTop = getScalarVal(val.structValues[dataCount], -1);
+          const dataVals = val.structValues.slice(0, dataCount);
+          const dataArrVal: ExecutionValue & { kind: "array" } = {
+            kind: "array",
+            type: `int[${dataCount}]`,
+            address: val.target,
+            length: dataCount,
+            values: dataVals,
+          };
+          if (!stacksList.some((s) => s.name === `${varName}.data`)) {
+            stacksList.push({
+              name: `${varName}.data`,
+              value: dataArrVal,
+              address: val.target,
+              topIndex: sTop,
+            });
+          }
+        }
+      }
+
+      if (isStructQueue) {
+        if (val.target.space === "heap") {
+          const block = currentStep.heap.find((b) => b.active && b.address.id === val.target!.id);
+          if (block && block.slotCount >= 3) {
+            const dataCount = block.slotCount - 2;
+            const sFront = getScalarVal(block.values[dataCount], 0);
+            const sRear = getScalarVal(block.values[dataCount + 1], -1);
+            const dataVals: ExecutionValue[] = [];
+            for (let i = 0; i < dataCount; i++) {
+              dataVals.push(block.values[i] ?? { kind: "scalar", type: "int", value: 0 });
+            }
+            const dataArrVal: ExecutionValue & { kind: "array" } = {
+              kind: "array",
+              type: `int[${dataCount}]`,
+              address: val.target,
+              length: dataCount,
+              values: dataVals,
+            };
+            if (!queuesList.some((q) => q.name === `${varName}.data`)) {
+              queuesList.push({
+                name: `${varName}.data`,
+                value: dataArrVal,
+                address: val.target,
+                frontIndex: sFront,
+                rearIndex: sRear,
+                frontKey: "front",
+                rearKey: "rear",
+              });
+            }
+          }
+        } else if (val.target.space === "stack" && val.structValues && val.structValues.length >= 3) {
+          const dataCount = val.structValues.length - 2;
+          const sFront = getScalarVal(val.structValues[dataCount], 0);
+          const sRear = getScalarVal(val.structValues[dataCount + 1], -1);
+          const dataVals = val.structValues.slice(0, dataCount);
+          const dataArrVal: ExecutionValue & { kind: "array" } = {
+            kind: "array",
+            type: `int[${dataCount}]`,
+            address: val.target,
+            length: dataCount,
+            values: dataVals,
+          };
+          if (!queuesList.some((q) => q.name === `${varName}.data`)) {
+            queuesList.push({
+              name: `${varName}.data`,
+              value: dataArrVal,
+              address: val.target,
+              frontIndex: sFront,
+              rearIndex: sRear,
+              frontKey: "front",
+              rearKey: "rear",
+            });
+          }
         }
       }
     }
 
+    // Collect all array variables across scopes
+    const arrayMap = new Map<string, { name: string; val: ExecutionValue & { kind: "array" }; address?: Address }>();
+    for (const [name, val] of allVars) {
+      if (val.kind === "array" && !arrayMap.has(name)) {
+        arrayMap.set(name, { name, val, address: val.address ?? getAddress(name) });
+      }
+    }
+
+    for (const [name, arr] of arrayMap) {
+      const val = arr.val;
+      const address = arr.address;
+      const labelLower = name.toLowerCase();
+      const isNamedStack = labelLower.includes("stack") || labelLower === "s" || labelLower.includes("stk");
+      const isNamedQueue = labelLower.includes("queue") || labelLower === "q";
+
+      let shouldPromoteStack = false;
+      let shouldPromoteQueue = false;
+
+      if (topVal !== undefined && frontVal !== undefined && rearVal !== undefined) {
+        if (isNamedStack) shouldPromoteStack = true;
+        else if (isNamedQueue) shouldPromoteQueue = true;
+        else shouldPromoteStack = true;
+      } else if (topVal !== undefined) {
+        if (!isNamedQueue) shouldPromoteStack = true;
+      } else if (frontVal !== undefined && rearVal !== undefined) {
+        if (!isNamedStack) shouldPromoteQueue = true;
+      }
+
+      if (shouldPromoteStack && topVal !== undefined) {
+        stacksList.push({ name, value: val, address, topIndex: topVal });
+      } else if (shouldPromoteQueue && frontVal !== undefined && rearVal !== undefined) {
+        queuesList.push({ name, value: val, address, frontIndex: frontVal, rearIndex: rearVal, frontKey, rearKey });
+      } else {
+        const is2D = Boolean(val.dimensions && val.dimensions.length === 2);
+        const rows = is2D ? val.dimensions![0] : 1;
+        const cols = is2D ? val.dimensions![1] : val.length;
+        arraysList.push({ name, value: val, address, is2D, rows, cols });
+      }
+    }
+
     return { scalars: scalarsList, arrays: arraysList, stacks: stacksList, queues: queuesList };
-  }, [activeFrame]);
+  }, [currentStep, activeFrame]);
 
   // Helper to determine access highlight for an address
   const getAccessHighlight = (targetAddr?: Address): "read" | "write" | null => {
@@ -105,7 +270,7 @@ export function VariableArrayViewPanel() {
     return hit ? hit.kind : null;
   };
 
-  if (!currentStep || !activeFrame || status === "idle") {
+  if (!currentStep || status === "idle") {
     return (
       <div className="bg-blueprint-grid flex h-full flex-col items-center justify-center gap-1.5 p-6 text-center">
         <Grid size={24} className="text-accent/40 mb-1" />
@@ -125,7 +290,7 @@ export function VariableArrayViewPanel() {
         <Grid size={24} className="text-accent/40 mb-1" />
         <p className="text-sm font-medium text-fg-muted">No Variables in Scope</p>
         <p className="max-w-xs text-xs text-fg-muted/80">
-          No scalar variables or arrays are declared in the current function scope ({activeFrame.functionName}()).
+          No scalar variables, arrays, stacks, or queues are currently active.
         </p>
       </div>
     );
@@ -137,10 +302,10 @@ export function VariableArrayViewPanel() {
       <div className="flex items-center justify-between border-b border-border pb-2">
         <div className="flex items-center gap-2">
           <span className="font-mono text-xs font-semibold text-fg">
-            {activeFrame.functionName}()
+            {activeFrame?.functionName ? `${activeFrame.functionName}()` : "Global Scope"}
           </span>
           <span className="text-[10px] uppercase tracking-wider text-fg-muted">
-            Call Depth {activeFrame.callDepth}
+            Call Depth {activeFrame?.callDepth ?? 0}
           </span>
         </div>
         <div className="flex items-center gap-3 text-[11px] font-mono text-fg-muted">

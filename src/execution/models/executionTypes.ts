@@ -10,7 +10,7 @@ export type ExecutionStatus = "idle" | "preparing" | "running" | "paused" | "wai
  * or null for NULL. See docs/PHASE_5_POINTERS.md. */
 export type ExecutionValue =
   | { kind: "scalar"; type: string; value: number }
-  | { kind: "pointer"; type: string; target: Address | null }
+  | { kind: "pointer"; type: string; target: Address | null; structValues?: ExecutionValue[] }
   | { kind: "array"; type: string; address: Address; length: number; values: ExecutionValue[]; dimensions?: number[] };
 
 /** Phase 6.1: one resolved memory access from a single execution step.

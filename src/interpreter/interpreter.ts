@@ -110,7 +110,7 @@ interface ResolvedDeclarator {
 }
 
 function resolveDeclarator(node: SyntaxNode, baseType: CType): ResolvedDeclarator | null {
-  if (node.type === "identifier") {
+  if (node.type === "identifier" || node.type === "field_identifier") {
     return { name: node.text, type: baseType };
   }
   if (node.type === "pointer_declarator") {
@@ -349,50 +349,63 @@ function parseStructDefinition(
     const fieldTypeNode = fieldDecl.childForFieldName("type");
     if (!fieldTypeNode) continue;
 
-    // Determine the field's type
-    let fieldType: CType | CPointerType | CStructPointee;
-    let fieldByteSize: number;
-
     // Check for pointer declarator — e.g. `struct Node *next` or `int *ptr`
     const fieldDeclaratorNode = fieldDecl.childForFieldName("declarator");
     if (!fieldDeclaratorNode) continue;
 
     let fieldName: string;
-    let isPointerField = false;
-
-    if (fieldDeclaratorNode.type === "pointer_declarator") {
-      isPointerField = true;
-      const innerDecl = fieldDeclaratorNode.childForFieldName("declarator");
-      fieldName = innerDecl?.text ?? fieldDeclaratorNode.text.replace(/^\*+/, "");
-    } else if (fieldDeclaratorNode.type === "field_identifier") {
-      fieldName = fieldDeclaratorNode.text;
-    } else {
-      fieldName = fieldDeclaratorNode.text;
-    }
+    let fieldType: CType | CPointerType | CStructPointee;
+    let fieldByteSize: number;
+    let arraySize: number | undefined;
+    let dimensions: number[] | undefined;
+    let fieldSlotCount = 1;
 
     if (fieldTypeNode.type === "struct_specifier") {
       const refName = fieldTypeNode.childForFieldName("name")?.text;
       if (refName) {
-        if (isPointerField) {
+        if (fieldDeclaratorNode.type === "pointer_declarator") {
+          const innerDecl = fieldDeclaratorNode.childForFieldName("declarator");
+          fieldName = innerDecl?.text ?? fieldDeclaratorNode.text.replace(/^\*+/, "");
           fieldType = { kind: "pointer", pointee: { kind: "struct", name: refName } };
           fieldByteSize = 4; // pointer size
         } else {
-          // Struct-by-value field (not yet fully supported, but define it)
+          fieldName = fieldDeclaratorNode.type === "field_identifier" ? fieldDeclaratorNode.text : fieldDeclaratorNode.text;
           fieldType = { kind: "struct", name: refName };
           const refDef = knownStructs.get(refName);
           fieldByteSize = refDef?.byteSize ?? 4;
+          fieldSlotCount = refDef?.slotCount ?? 1;
         }
       } else {
         continue; // unnamed struct type in field — skip
       }
     } else {
       const baseType = mapPrimitiveType(fieldTypeNode.text);
-      if (isPointerField) {
-        fieldType = { kind: "pointer", pointee: baseType };
-        fieldByteSize = 4; // pointer size
+      const resolved = resolveDeclarator(fieldDeclaratorNode, baseType);
+      if (resolved) {
+        fieldName = resolved.name;
+        fieldType = resolved.type;
+        arraySize = resolved.arraySize;
+        dimensions = resolved.dimensions;
+        if (resolved.arraySize !== undefined) {
+          fieldSlotCount = resolved.arraySize;
+          fieldByteSize = sizeOfType(baseType) * resolved.arraySize;
+        } else if (typeof resolved.type !== "string" && resolved.type.kind === "pointer") {
+          fieldByteSize = 4;
+        } else {
+          fieldByteSize = sizeOfType(baseType);
+        }
       } else {
-        fieldType = baseType;
-        fieldByteSize = sizeOfType(baseType);
+        const isPointerField = fieldDeclaratorNode.type === "pointer_declarator";
+        if (isPointerField) {
+          const innerDecl = fieldDeclaratorNode.childForFieldName("declarator");
+          fieldName = innerDecl?.text ?? fieldDeclaratorNode.text.replace(/^\*+/, "");
+          fieldType = { kind: "pointer", pointee: baseType };
+          fieldByteSize = 4;
+        } else {
+          fieldName = fieldDeclaratorNode.text;
+          fieldType = baseType;
+          fieldByteSize = sizeOfType(baseType);
+        }
       }
     }
 
@@ -401,15 +414,17 @@ function parseStructDefinition(
       type: fieldType,
       slotOffset,
       byteSize: fieldByteSize,
+      arraySize,
+      dimensions,
     });
-    slotOffset++;
+    slotOffset += fieldSlotCount;
     totalByteSize += fieldByteSize;
   }
 
   const def: StructDefinition = {
     name: structName,
     fields,
-    slotCount: fields.length,
+    slotCount: slotOffset,
     byteSize: totalByteSize,
   };
   // Update the placeholder in-place
@@ -707,13 +722,19 @@ function* callMalloc(node: SyntaxNode, argNodes: SyntaxNode[], scope: Scope, fun
     if (def) {
       const address = scope.memory.allocateHeap(def.slotCount, 4, "malloc", defaultValueForType("int"));
       for (const field of def.fields) {
+        const count = field.arraySize ?? 1;
         const fieldDefault = typeof field.type === "string"
           ? defaultValueForType(field.type)
           : field.type.kind === "pointer"
             ? defaultPointerValue(field.type.pointee)
             : defaultValueForType("int");
-        scope.memory.write({ ...address, slot: field.slotOffset }, fieldDefault);
-        scope.memory.setLabel({ ...address, slot: field.slotOffset }, field.name);
+        for (let i = 0; i < count; i++) {
+          scope.memory.write({ ...address, slot: field.slotOffset + i }, fieldDefault);
+          scope.memory.setLabel(
+            { ...address, slot: field.slotOffset + i },
+            count > 1 ? `${field.name}[${i}]` : field.name,
+          );
+        }
       }
       yield makeStep(node, "statement", callStack, scope, `malloc: allocated ${def.byteSize} bytes at ${formatAddress(address)}`);
       const structPtr: CStructPointee = { kind: "struct", name: structName };
@@ -1377,16 +1398,23 @@ function* executeDeclaration(
           );
           // Initialize each field with its default value
           for (const field of structDef.fields) {
+            const count = field.arraySize ?? 1;
             const fieldDefault = typeof field.type === "string"
               ? defaultValueForType(field.type)
               : field.type.kind === "pointer"
                 ? defaultPointerValue(field.type.pointee)
                 : defaultValueForType("int");
-            scope.memory.write({ ...baseAddress, slot: field.slotOffset }, fieldDefault);
+            for (let i = 0; i < count; i++) {
+              scope.memory.write({ ...baseAddress, slot: field.slotOffset + i }, fieldDefault);
+              scope.memory.setLabel(
+                { ...baseAddress, slot: field.slotOffset + i },
+                count > 1 ? `${varName}.${field.name}[${i}]` : `${varName}.${field.name}`,
+              );
+            }
           }
           // Store as a pointer to the struct (struct variables are addressable)
           const structPtr: CStructPointee = { kind: "struct", name: structName };
-          scope.declare(varName, pointerValue(structPtr, baseAddress));
+          scope.declareStruct(varName, pointerValue(structPtr, baseAddress));
           continue;
         }
       }
@@ -1460,15 +1488,22 @@ function* executeDeclaration(
             defaultValueForType("int"),
           );
           for (const field of structDef.fields) {
+            const count = field.arraySize ?? 1;
             const fieldDefault = typeof field.type === "string"
               ? defaultValueForType(field.type)
               : field.type.kind === "pointer"
                 ? defaultPointerValue(field.type.pointee)
                 : defaultValueForType("int");
-            scope.memory.write({ ...baseAddress, slot: field.slotOffset }, fieldDefault);
+            for (let i = 0; i < count; i++) {
+              scope.memory.write({ ...baseAddress, slot: field.slotOffset + i }, fieldDefault);
+              scope.memory.setLabel(
+                { ...baseAddress, slot: field.slotOffset + i },
+                count > 1 ? `${varName}.${field.name}[${i}]` : `${varName}.${field.name}`,
+              );
+            }
           }
           const structPtr: CStructPointee = { kind: "struct", name: structName };
-          scope.declare(varName, pointerValue(structPtr, baseAddress));
+          scope.declareStruct(varName, pointerValue(structPtr, baseAddress));
           continue;
         }
       }
@@ -1642,6 +1677,9 @@ function* evaluate(node: SyntaxNode, scope: Scope, functions: Map<string, Syntax
           const address = scope.lookupAddress(argumentNode.text);
           if (!address) throw new InterpreterError(`Use of undeclared variable "${argumentNode.text}"`, argumentNode);
           const existing = scope.lookup(argumentNode.text)!;
+          if (scope.isStructVarName(argumentNode.text) && isPointer(existing)) {
+            return existing;
+          }
           const pointeeType: CType | CPointerType = existing.kind === "pointer" ? existing.pointerType : existing.kind === "array" ? existing.elementType : existing.type;
           return pointerValue(pointeeType, address);
         }
@@ -1664,7 +1702,13 @@ function* evaluate(node: SyntaxNode, scope: Scope, functions: Map<string, Syntax
           return pointerArithmetic(arrayVal, indexVal.value, scope, node);
         }
 
-        unsupported(node, "Unsupported address-of expression: the address-of operator (&) is only supported on a variable or array element");
+        if (argumentNode.type === "field_expression") {
+          const { address: fieldAddr, field } = yield* resolveFieldInfo(argumentNode, scope, functions, callStack);
+          const pointeeType: CType | CPointerType | CStructPointee = field.type;
+          return pointerValue(pointeeType, fieldAddr);
+        }
+
+        unsupported(node, "Unsupported address-of expression: the address-of operator (&) is only supported on a variable, array element, or struct field");
       }
 
       if (operator === "*") {
@@ -1680,11 +1724,11 @@ function* evaluate(node: SyntaxNode, scope: Scope, functions: Map<string, Syntax
     case "update_expression": {
       const operator = node.childForFieldName("operator")?.text ?? "++";
       const argumentNode = node.childForFieldName("argument")!;
-      const isPrefix = node.child(0)?.type === operator;
-      if (argumentNode.type !== "identifier") {
-        unsupported(node, "++/-- is only supported on simple variables");
-      }
-      const current = yield* evaluate(argumentNode, scope, functions, callStack);
+      const isPrefix = node.child(0)?.text === operator || node.child(0)?.type === operator;
+
+      const lvalue = yield* resolveLValue(argumentNode, scope, functions, callStack);
+      const current = lvalue.currentValue;
+
       let updated: CValue;
       if (isPointer(current)) {
         updated = pointerArithmetic(current, operator === "++" ? 1 : -1, scope, node);
@@ -1694,8 +1738,12 @@ function* evaluate(node: SyntaxNode, scope: Scope, functions: Map<string, Syntax
       } else {
         unsupported(node, "++/-- is not supported on arrays");
       }
-      scope.assign(argumentNode.text, updated);
-      if (updated.kind === "pointer") scope.memory.recordPointerAssign(argumentNode.text, updated.target);
+
+      scope.memory.write(lvalue.address, updated);
+      if (lvalue.varName && updated.kind === "pointer") {
+        scope.memory.recordPointerAssign(lvalue.varName, updated.target);
+      }
+
       return isPrefix ? updated : current;
     }
 
@@ -1703,15 +1751,16 @@ function* evaluate(node: SyntaxNode, scope: Scope, functions: Map<string, Syntax
       const operator = node.childForFieldName("operator")?.text ?? "=";
       const leftNode = node.childForFieldName("left")!;
       const rightNode = node.childForFieldName("right")!;
+      const targetLeftNode = unwrapParens(leftNode);
 
       // *ptr = value  (or *ptr += value, etc.) — write through a pointer.
-      if (leftNode.type === "pointer_expression" && leftNode.childForFieldName("operator")?.text === "*") {
-        const pointerArgNode = leftNode.childForFieldName("argument")!;
+      if (targetLeftNode.type === "pointer_expression" && targetLeftNode.childForFieldName("operator")?.text === "*") {
+        const pointerArgNode = targetLeftNode.childForFieldName("argument")!;
         const pointer = yield* evaluate(pointerArgNode, scope, functions, callStack);
-        if (!isPointer(pointer)) throw new InterpreterError("Cannot dereference a non-pointer value", leftNode);
-        if (pointer.target === null) throw new InterpreterError("Null pointer dereference", leftNode);
+        if (!isPointer(pointer)) throw new InterpreterError("Cannot dereference a non-pointer value", targetLeftNode);
+        if (pointer.target === null) throw new InterpreterError("Null pointer dereference", targetLeftNode);
         if (pointer.target.space === "heap" && !scope.memory.isActiveHeapBlock(pointer.target)) {
-          throw new InterpreterError(`Use after free: ${formatAddress(pointer.target)} was already freed`, leftNode);
+          throw new InterpreterError(`Use after free: ${formatAddress(pointer.target)} was already freed`, targetLeftNode);
         }
         const right = yield* evaluate(rightNode, scope, functions, callStack);
         const newValue =
@@ -1723,10 +1772,10 @@ function* evaluate(node: SyntaxNode, scope: Scope, functions: Map<string, Syntax
       }
 
       // Phase 6: subscript assignment — arr[i] = value
-      if (leftNode.type === "subscript_expression") {
-        const arrNode = leftNode.childForFieldName("argument");
-        const idxNode = leftNode.childForFieldName("index");
-        if (!arrNode || !idxNode) unsupported(leftNode, "invalid subscript expression");
+      if (targetLeftNode.type === "subscript_expression") {
+        const arrNode = targetLeftNode.childForFieldName("argument");
+        const idxNode = targetLeftNode.childForFieldName("index");
+        if (!arrNode || !idxNode) unsupported(targetLeftNode, "invalid subscript expression");
         const arrVal = yield* evaluate(arrNode, scope, functions, callStack);
         const idxVal = yield* evaluate(idxNode, scope, functions, callStack);
         if (!isPointer(arrVal)) throw new InterpreterError("Subscript requires a pointer or array", arrNode);
@@ -1748,8 +1797,11 @@ function* evaluate(node: SyntaxNode, scope: Scope, functions: Map<string, Syntax
       }
 
       // Phase 6.2: field_expression assignment — `n.data = 42` or `head->data = 10`
-      if (leftNode.type === "field_expression") {
-        const fieldAddr = yield* resolveFieldAddress(leftNode, scope, functions, callStack);
+      if (targetLeftNode.type === "field_expression") {
+        const { address: fieldAddr, field } = yield* resolveFieldInfo(targetLeftNode, scope, functions, callStack);
+        if (field.arraySize !== undefined) {
+          throw new InterpreterError(`Cannot assign directly to array field "${field.name}"`, targetLeftNode);
+        }
         const right = yield* evaluate(rightNode, scope, functions, callStack);
         const existingVal = scope.memory.read(fieldAddr);
         let newValue: CValue;
@@ -1766,11 +1818,11 @@ function* evaluate(node: SyntaxNode, scope: Scope, functions: Map<string, Syntax
         return newValue;
       }
 
-      if (leftNode.type !== "identifier") {
-        unsupported(leftNode, "only assignment to simple variables, *pointer, arr[i], or struct fields is supported");
+      if (targetLeftNode.type !== "identifier") {
+        unsupported(targetLeftNode, "only assignment to simple variables, *pointer, arr[i], or struct fields is supported");
       }
       const right = yield* evaluate(rightNode, scope, functions, callStack);
-      const current = scope.lookup(leftNode.text);
+      const current = scope.lookup(targetLeftNode.text);
       let newValue: CValue;
       if (operator === "=") {
         if (current && isPointer(current) && isPointer(right)) {
@@ -1792,8 +1844,8 @@ function* evaluate(node: SyntaxNode, scope: Scope, functions: Map<string, Syntax
       } else {
         newValue = applyBinaryOp(operator.slice(0, -1), current as CScalarValue, right as CScalarValue);
       }
-      scope.assign(leftNode.text, newValue);
-      if (newValue.kind === "pointer") scope.memory.recordPointerAssign(leftNode.text, newValue.target);
+      scope.assign(targetLeftNode.text, newValue);
+      if (newValue.kind === "pointer") scope.memory.recordPointerAssign(targetLeftNode.text, newValue.target);
       return newValue;
     }
 
@@ -1869,7 +1921,10 @@ function* evaluate(node: SyntaxNode, scope: Scope, functions: Map<string, Syntax
 
     // Phase 6.2: field_expression — `n.data` or `head->data`
     case "field_expression": {
-      const fieldAddr = yield* resolveFieldAddress(node, scope, functions, callStack);
+      const { address: fieldAddr, field } = yield* resolveFieldInfo(node, scope, functions, callStack);
+      if (field.arraySize !== undefined) {
+        return pointerValue(field.type as CType, fieldAddr, field.dimensions ?? [field.arraySize]);
+      }
       return scope.memory.read(fieldAddr);
     }
 
@@ -1885,15 +1940,20 @@ function* evaluate(node: SyntaxNode, scope: Scope, functions: Map<string, Syntax
 // Phase 6.2: struct field access resolution
 // ---------------------------------------------------------------------------
 
+interface ResolvedFieldInfo {
+  address: Address;
+  field: StructFieldDefinition;
+}
+
 /** Resolves a `field_expression` AST node (`.` or `->` access) to the
- * memory Address of the target field. Used by both evaluate (reads)
- * and assignment_expression (writes). */
-function* resolveFieldAddress(
+ * field info and memory Address of the target field. Used by evaluate (reads),
+ * assignment_expression (writes), and resolveLValue. */
+function* resolveFieldInfo(
   node: SyntaxNode,
   scope: Scope,
   functions: Map<string, SyntaxNode>,
   callStack: RuntimeFrame[],
-): Step<Address> {
+): Step<ResolvedFieldInfo> {
   const argumentNode = node.childForFieldName("argument")!;
   const fieldNode = node.childForFieldName("field")!;
   const fieldName = fieldNode.text;
@@ -1924,13 +1984,13 @@ function* resolveFieldAddress(
         node,
       );
     }
-    baseAddress = { space: baseValue.target.space, id: baseValue.target.id, slot: 0 };
+    baseAddress = { space: baseValue.target.space, id: baseValue.target.id, slot: baseValue.target.slot };
   } else {
     // `var.field` — the variable itself is a pointer to the struct storage
     if (baseValue.target === null) {
       throw new InterpreterError("Invalid struct access (null)", node);
     }
-    baseAddress = { space: baseValue.target.space, id: baseValue.target.id, slot: 0 };
+    baseAddress = { space: baseValue.target.space, id: baseValue.target.id, slot: baseValue.target.slot };
   }
 
   // Look up the struct definition to find the field's slot offset
@@ -1953,5 +2013,96 @@ function* resolveFieldAddress(
     );
   }
 
-  return { space: baseAddress.space, id: baseAddress.id, slot: field.slotOffset };
+  return {
+    address: { space: baseAddress.space, id: baseAddress.id, slot: baseAddress.slot + field.slotOffset },
+    field,
+  };
+}
+
+/** Resolves a `field_expression` AST node (`.` or `->` access) to the
+ * memory Address of the target field. Used by both evaluate (reads)
+ * and assignment_expression (writes). */
+export function* resolveFieldAddress(
+  node: SyntaxNode,
+  scope: Scope,
+  functions: Map<string, SyntaxNode>,
+  callStack: RuntimeFrame[],
+): Step<Address> {
+  const { address } = yield* resolveFieldInfo(node, scope, functions, callStack);
+  return address;
+}
+
+interface ResolvedLValue {
+  address: Address;
+  currentValue: CValue;
+  varName?: string;
+}
+
+/** Resolves an assignable lvalue node to its memory Address and currentValue.
+ * Used by update_expression (++ and --). */
+function* resolveLValue(
+  node: SyntaxNode,
+  scope: Scope,
+  functions: Map<string, SyntaxNode>,
+  callStack: RuntimeFrame[],
+): Step<ResolvedLValue> {
+  const unwrapped = unwrapParens(node);
+
+  if (unwrapped.type === "identifier") {
+    if (scope.isArrayName(unwrapped.text)) {
+      unsupported(unwrapped, "++/-- is not supported on arrays");
+    }
+    const address = scope.lookupAddress(unwrapped.text);
+    if (!address) {
+      throw new InterpreterError(`Undeclared identifier "${unwrapped.text}"`, unwrapped);
+    }
+    const currentValue = scope.memory.read(address);
+    return { address, currentValue, varName: unwrapped.text };
+  }
+
+  if (unwrapped.type === "pointer_expression" && unwrapped.childForFieldName("operator")?.text === "*") {
+    const pointerArgNode = unwrapped.childForFieldName("argument")!;
+    const pointer = yield* evaluate(pointerArgNode, scope, functions, callStack);
+    if (!isPointer(pointer)) throw new InterpreterError("Cannot dereference a non-pointer value", unwrapped);
+    if (pointer.target === null) throw new InterpreterError("Null pointer dereference", unwrapped);
+    if (pointer.target.space === "heap" && !scope.memory.isActiveHeapBlock(pointer.target)) {
+      throw new InterpreterError(`Use after free: ${formatAddress(pointer.target)} was already freed`, unwrapped);
+    }
+    const currentValue = scope.memory.read(pointer.target);
+    return { address: pointer.target, currentValue };
+  }
+
+  if (unwrapped.type === "subscript_expression") {
+    const arrNode = unwrapped.childForFieldName("argument");
+    const idxNode = unwrapped.childForFieldName("index");
+    if (!arrNode || !idxNode) unsupported(unwrapped, "invalid subscript expression");
+    const arrVal = yield* evaluate(arrNode, scope, functions, callStack);
+    const idxVal = yield* evaluate(idxNode, scope, functions, callStack);
+    if (!isPointer(arrVal)) throw new InterpreterError("Subscript requires a pointer or array", arrNode);
+    if (!isScalar(idxVal)) throw new InterpreterError("Array index must be an integer", idxNode);
+    if (arrVal.dimensions && arrVal.dimensions.length > 0) {
+      const maxDim = arrVal.dimensions[0];
+      if (idxVal.value < 0 || idxVal.value >= maxDim) {
+        throw new InterpreterError(
+          `Array index ${idxVal.value} is outside the bounds [0, ${maxDim - 1}]`,
+          idxNode,
+        );
+      }
+    }
+    const target = pointerArithmetic(arrVal, idxVal.value, scope, unwrapped);
+    if (target.target === null) throw new InterpreterError("Null pointer dereference in subscript", unwrapped);
+    const currentValue = scope.memory.read(target.target);
+    return { address: target.target, currentValue };
+  }
+
+  if (unwrapped.type === "field_expression") {
+    const { address: fieldAddr, field } = yield* resolveFieldInfo(unwrapped, scope, functions, callStack);
+    if (field.arraySize !== undefined) {
+      unsupported(unwrapped, "++/-- is not supported on arrays");
+    }
+    const currentValue = scope.memory.read(fieldAddr);
+    return { address: fieldAddr, currentValue };
+  }
+
+  throw new InterpreterError(`Expression is not assignable (lvalue required for ++/--): "${unwrapped.text}"`, unwrapped);
 }

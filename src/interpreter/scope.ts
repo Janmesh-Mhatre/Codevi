@@ -32,6 +32,8 @@ export class Scope {
    * by tag name (`"Node"` for `struct Node`). Chains to parent scope so
    * struct definitions at outer scopes are visible in inner blocks. */
   private readonly structDefs = new Map<string, StructDefinition>();
+  /** Phase 6.2/6.3: names that are stack struct variables (not raw pointer variables). */
+  private readonly structVarNames = new Set<string>();
   readonly memory: MemoryModel;
 
   /** Child scopes only need a parent — they inherit its MemoryModel
@@ -75,6 +77,18 @@ export class Scope {
    * parent scopes, matching C's scoping rules. */
   isArrayName(name: string): boolean {
     return this.arrayNames.has(name) || (this.parent?.isArrayName(name) ?? false);
+  }
+
+  /** Phase 6.2/6.3: registers a struct variable on the stack. */
+  declareStruct(name: string, value: CValue): Address {
+    const address = this.declare(name, value);
+    this.structVarNames.add(name);
+    return address;
+  }
+
+  /** Phase 6.2/6.3: returns true if `name` was declared as a stack struct variable. */
+  isStructVarName(name: string): boolean {
+    return this.structVarNames.has(name) || (this.parent?.isStructVarName(name) ?? false);
   }
 
   lookupAddress(name: string): Address | undefined {

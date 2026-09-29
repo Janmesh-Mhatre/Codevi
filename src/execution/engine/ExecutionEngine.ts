@@ -45,7 +45,20 @@ let logIdCounter = 0;
 
 function toPlainValue(value: CValue, memory?: MemoryModel): ExecutionValue {
   if (value.kind === "pointer") {
-    return { kind: "pointer", type: formatPointerType(value.pointerType.pointee), target: value.target };
+    let structValues: ExecutionValue[] | undefined;
+    if (memory && value.target && value.target.space === "stack" && typeof value.pointerType.pointee !== "string" && "kind" in value.pointerType.pointee && value.pointerType.pointee.kind === "struct") {
+      const arr = memory.getStackArray(value.target);
+      if (arr) {
+        const slotVals = memory.stackArraySlotValues(value.target);
+        structValues = slotVals.map((v) => toPlainValue(v, memory));
+      }
+    }
+    return {
+      kind: "pointer",
+      type: formatPointerType(value.pointerType.pointee),
+      target: value.target,
+      ...(structValues ? { structValues } : {}),
+    };
   }
   if (value.kind === "array") {
     const slotValues = memory ? memory.stackArraySlotValues(value.baseAddress) : [];
@@ -327,7 +340,7 @@ function computePointerViewData(
   return { relationships: uniqueRelationships, stackVariables: allVars, heapBlocks: orderedHeap };
 }
 
-function toExecutionStep(step: InterpreterStep): ExecutionStep {
+export function toExecutionStep(step: InterpreterStep): ExecutionStep {
   const callStack = step.callStack.map((frame, index) => toStackFrame(frame, index === step.callStack.length - 1, step.memory));
   const heap = toHeapBlocks(step.memory);
   /** Phase 6.1: resolve raw MemoryEvents into StepMemoryAccess by

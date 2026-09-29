@@ -56,7 +56,7 @@ export const StructureVisualizationPanel: React.FC = () => {
   // 2. Select active structures based on filter
   const arrayStructures = useMemo(() => {
     if (!graph) return [];
-    return graph.structures.filter((s) => s.kind === "array");
+    return graph.structures.filter((s) => s.kind === "array" || s.kind === "stack" || s.kind === "queue");
   }, [graph]);
 
   const linkedListStructures = useMemo(() => {

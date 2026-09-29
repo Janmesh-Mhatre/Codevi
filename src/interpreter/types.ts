@@ -22,6 +22,10 @@ export interface StructFieldDefinition {
   slotOffset: number;
   /** Codevi's simulated byte size for this field. */
   byteSize: number;
+  /** Phase 6.3/6.4: array element count if this field is an array (e.g. `int data[5]`). */
+  arraySize?: number;
+  /** Array dimensions (e.g. `[5]`). */
+  dimensions?: number[];
 }
 
 /** A complete struct type definition (e.g. `struct Node { int data; struct Node *next; }`).
