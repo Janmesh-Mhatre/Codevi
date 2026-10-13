@@ -1,11 +1,9 @@
 import { useCallback, useEffect, useRef } from "react";
 import { Toolbar } from "../toolbar/Toolbar";
 import { CodeEditor } from "../editor/CodeEditor";
-import { VisualizationPanel } from "../panels/VisualizationPanel";
 import { AstViewerPanel } from "../panels/AstViewerPanel";
-import { StackPanel } from "../panels/StackPanel";
-import { PointerViewPanel } from "../panels/PointerViewPanel";
-import { VariableArrayViewPanel } from "../panels/VariableArrayViewPanel";
+import { DeclarationsPanel } from "../panels/DeclarationsPanel";
+import { NewVisualizationPanel } from "../panels/NewVisualizationPanel";
 import { VariablePanel } from "../panels/VariablePanel";
 import { MemoryPanel } from "../panels/MemoryPanel";
 import { ExplanationPanel } from "../panels/ExplanationPanel";
@@ -16,12 +14,10 @@ import { Tabs } from "../common/Tabs";
 import { ResizeHandle } from "../common/ResizeHandle";
 import { useUIStore } from "../../state/uiStore";
 
-const TOP_RIGHT_TABS = [
+export const TOP_RIGHT_TABS = [
   { id: "ast", label: "AST" },
-  { id: "stack", label: "Stack" },
+  { id: "declarations", label: "Declarations" },
   { id: "visualization", label: "Visualization" },
-  { id: "variable-array-view", label: "Variable & Array View" },
-  { id: "pointer-view", label: "Pointer View" },
 ] as const;
 
 /**
@@ -184,10 +180,9 @@ export function AppShell() {
                     <Tabs tabs={TOP_RIGHT_TABS} defaultTabId="ast">
                       {(activeTabId) => {
                         if (activeTabId === "ast") return <AstViewerPanel />;
-                        if (activeTabId === "stack") return <StackPanel />;
-                        if (activeTabId === "variable-array-view") return <VariableArrayViewPanel />;
-                        if (activeTabId === "pointer-view") return <PointerViewPanel />;
-                        return <VisualizationPanel />;
+                        if (activeTabId === "declarations") return <DeclarationsPanel />;
+                        if (activeTabId === "visualization") return <NewVisualizationPanel />;
+                        return <NewVisualizationPanel />;
                       }}
                     </Tabs>
                   </div>
