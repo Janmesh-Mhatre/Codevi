@@ -244,20 +244,28 @@ export function detectPointerViewGraph(
   let maxX = startX + HEAP_NODE_W;
 
   // Helper to test if a directed path exists from `from` to `to` in `outEdges`
+  const reachCache = new Map<string, boolean>();
   function canReach(from: number, to: number): boolean {
     if (from === to) return true;
+    const cacheKey = `${from}->${to}`;
+    if (reachCache.has(cacheKey)) return reachCache.get(cacheKey)!;
+
     const q = [from];
     const seen = new Set<number>([from]);
     while (q.length > 0) {
       const curr = q.shift()!;
       for (const edge of outEdges.get(curr) ?? []) {
-        if (edge.targetId === to) return true;
+        if (edge.targetId === to) {
+          reachCache.set(cacheKey, true);
+          return true;
+        }
         if (!seen.has(edge.targetId)) {
           seen.add(edge.targetId);
           q.push(edge.targetId);
         }
       }
     }
+    reachCache.set(cacheKey, false);
     return false;
   }
 
@@ -286,8 +294,10 @@ export function detectPointerViewGraph(
 
     const queue: number[] = [...entryNodes];
     const visitedInComp = new Set<number>(entryNodes);
+    let iterations = 0;
+    const maxIterations = comp.length * 10;
 
-    while (queue.length > 0) {
+    while (queue.length > 0 && ++iterations <= maxIterations) {
       const u = queue.shift()!;
       const uLayer = nodeLayer.get(u) ?? 0;
 
@@ -303,7 +313,7 @@ export function detectPointerViewGraph(
           visitedInComp.add(v);
           nodeLayer.set(v, nextLayer);
           queue.push(v);
-        } else if (!isBackEdge && nextLayer > (nodeLayer.get(v) ?? 0)) {
+        } else if (!isBackEdge && nextLayer < comp.length && nextLayer > (nodeLayer.get(v) ?? 0)) {
           nodeLayer.set(v, nextLayer);
           queue.push(v);
         }

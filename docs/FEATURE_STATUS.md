@@ -154,5 +154,5 @@ This document provides a verified, comprehensive status of all language, runtime
 | Monaco Editor Integration | **Implemented** | Offline web worker, caret remeasurement, syntax diagnostics, execution line highlight. |
 | Curated 9-Theme System | **Implemented** | 9 themes with `localStorage` persistence and dynamic Monaco editor theme synchronization. |
 | Automated Unit Testing | **Implemented** | **31 test files, 365 tests — 100% passing.** |
-| Desktop Tauri Packaging | **Planned** | Configured in `src-tauri`; native desktop builds postponed until final release. |
+| Browser-Only Architecture | **Active** | Pure React + TypeScript browser runtime; obsolete desktop packaging removed. |
 | Reverse Stepping ("Step Back") | **Planned** | Toolbar button disabled with placeholder message. |

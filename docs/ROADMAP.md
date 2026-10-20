@@ -7,7 +7,7 @@
 - Do not recreate the project; extend existing systems.
 - Work on the existing repository only.
 - Browser-first development.
-- Native desktop (.exe) packaging is supported via Tauri, but browser web app is the primary target.
+- Codevi is a pure browser-based React + TypeScript web application (no native desktop runtime or Tauri wrapper).
 
 ## Phases & Progress
 

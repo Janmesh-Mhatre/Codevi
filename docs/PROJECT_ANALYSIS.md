@@ -85,7 +85,7 @@ codevi/
 ├── package.json                     # NPM configuration & dependencies
 ├── tsconfig.json                    # TypeScript compiler configuration
 ├── tsconfig.node.json               # Node-specific TypeScript config
-├── vite.config.ts                   # Vite bundler configuration (Tauri + Tailwind)
+├── vite.config.ts                   # Vite bundler configuration (Tailwind v4)
 ├── vitest.config.ts                 # Vitest configuration (fileParallelism: false)
 │
 ├── docs/                            # Project documentation
@@ -192,7 +192,6 @@ codevi/
 │   ├── index.css                    # Tailwind CSS v4 directives & theme tokens
 │   └── vite-env.d.ts                # Vite environment typings
 │
-├── src-tauri/                       # Tauri desktop configuration & Rust project
 └── tests/                           # Unit and integration test suite (31 files, 365 tests)
 ```
 
@@ -398,7 +397,7 @@ Codevi provides three active visualization panels alongside the AST Viewer and M
   - `tree-sitter-c.wasm` (175.76 kB)
   - `editor.worker.js` (bundled locally via `?worker`)
   - IBM Plex Mono & IBM Plex Sans web fonts (bundled locally)
-- **Desktop (Tauri):** `src-tauri` configured for Tauri v2 desktop builds (`cargo tauri dev` / `cargo tauri build`); browser application remains primary target.
+- **Platform Target:** Browser-based React + TypeScript SPA. Desktop/Tauri wrappers have been removed to keep the architecture purely web-native.
 
 ---
 

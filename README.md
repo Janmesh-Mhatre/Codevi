@@ -1,6 +1,6 @@
 # Codevi
 
-An educational, browser-based interactive execution visualizer for C programs — built with React, TypeScript, Tailwind CSS, Monaco Editor, WebAssembly (Tree-sitter), and Tauri.
+An educational, browser-based interactive execution visualizer for C programs — built with React, TypeScript, Tailwind CSS, Monaco Editor, and WebAssembly (Tree-sitter).
 
 Codevi enables students and programmers to see how C code actually executes: stepping through control flow, watching variables change across lexical scopes, tracing simulated memory layouts across stack and heap regions, and visualizing pointers and data structures in real time.
 
@@ -194,13 +194,6 @@ npm run preview
 ## Deployment
 
 Codevi is built as a static client-side web application. It can be hosted on any static hosting platform (Vercel, GitHub Pages, Netlify, Cloudflare Pages, AWS S3/CloudFront) with standard single-page app (SPA) routing to `dist/index.html`.
-
-For desktop distribution, native builds are supported via Tauri:
-```bash
-npm run tauri dev
-npm run tauri build
-```
-*(Note: Native desktop packaging is optional; the browser web application is the primary active platform).*
 
 ---
 

@@ -55,7 +55,7 @@ function detectAdjacencyMatrixGraphs(
     ...(globals ? Object.entries(globals) : []),
   ];
 
-  const graphKeywords = ["graph", "adj", "mat", "matrix", "edges", "network", "cost", "dist"];
+  const graphKeywords = ["graph", "adj", "adjacency", "network", "edges"];
 
   for (const [varName, val] of allVars) {
     if (val.kind !== "array" || !val.dimensions || val.dimensions.length !== 2) {
@@ -80,14 +80,10 @@ function detectAdjacencyMatrixGraphs(
 
     const nonZeroCount = flatValues.filter((v) => v !== 0).length;
 
-    // Check if binary (0 or 1)
-    const isBinary = flatValues.every((v) => v === 0 || v === 1);
-
     // Confidence heuristic:
-    // If name matches keyword and has at least one edge, OR if it's binary with realistic edge density
-    const isGraphMatrix =
-      (hasKeyword && nonZeroCount > 0) ||
-      (isBinary && nonZeroCount >= 1 && nonZeroCount <= rows * cols - 1);
+    // Requires explicit graph naming evidence and at least one non-zero edge,
+    // ensuring ordinary 2D arrays (like arr[4][4] or matrix[4][4]) remain normal arrays.
+    const isGraphMatrix = hasKeyword && nonZeroCount > 0;
 
     if (!isGraphMatrix) continue;
 

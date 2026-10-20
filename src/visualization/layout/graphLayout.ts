@@ -100,20 +100,28 @@ export function layoutGraphStructures(
   let maxTotalW = startX;
 
   // Helper to test if a directed path exists from `from` to `to` in `outNeighbors`
+  const reachCache = new Map<string, boolean>();
   function canReach(from: string, to: string): boolean {
     if (from === to) return true;
+    const cacheKey = `${from}->${to}`;
+    if (reachCache.has(cacheKey)) return reachCache.get(cacheKey)!;
+
     const q = [from];
     const seen = new Set<string>([from]);
     while (q.length > 0) {
       const curr = q.shift()!;
       for (const tgt of outNeighbors.get(curr) ?? []) {
-        if (tgt === to) return true;
+        if (tgt === to) {
+          reachCache.set(cacheKey, true);
+          return true;
+        }
         if (!seen.has(tgt)) {
           seen.add(tgt);
           q.push(tgt);
         }
       }
     }
+    reachCache.set(cacheKey, false);
     return false;
   }
 
@@ -134,8 +142,10 @@ export function layoutGraphStructures(
     // BFS with cycle-breaking to compute layer depths
     const queue: string[] = [...entryNodes];
     const visitedInComp = new Set<string>(entryNodes);
+    let iterations = 0;
+    const maxIterations = comp.length * 10;
 
-    while (queue.length > 0) {
+    while (queue.length > 0 && ++iterations <= maxIterations) {
       const u = queue.shift()!;
       const uLayer = nodeLayer.get(u) ?? 0;
 
@@ -149,7 +159,7 @@ export function layoutGraphStructures(
           visitedInComp.add(v);
           nodeLayer.set(v, nextLayer);
           queue.push(v);
-        } else if (!isBackEdge && nextLayer > (nodeLayer.get(v) ?? 0)) {
+        } else if (!isBackEdge && nextLayer < comp.length && nextLayer > (nodeLayer.get(v) ?? 0)) {
           nodeLayer.set(v, nextLayer);
           queue.push(v);
         }

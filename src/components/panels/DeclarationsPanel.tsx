@@ -64,6 +64,26 @@ function resolveChain(
 export function DeclarationsPanel() {
   const status = useExecutionStore((state) => state.status);
   const currentStep = useExecutionStore((state) => state.currentStep);
+  // Global declarations separated into variables and arrays
+  const { globalVariables, globalArrays } = useMemo(() => {
+    const vars: VizEntry[] = [];
+    const arrs: ArrayEntry[] = [];
+    if (!currentStep?.globals) return { globalVariables: vars, globalArrays: arrs };
+
+    for (const [name, val] of Object.entries(currentStep.globals)) {
+      const addr = currentStep.globalAddresses?.[name];
+      if (val.kind === "array") {
+        const is2D = !!val.dimensions && val.dimensions.length === 2;
+        const rows = is2D ? val.dimensions![0] : 1;
+        const cols = is2D ? val.dimensions![1] : val.length;
+        arrs.push({ name, value: val, address: addr, is2D, rows, cols });
+      } else {
+        vars.push({ name, value: val, address: addr });
+      }
+    }
+    return { globalVariables: vars, globalArrays: arrs };
+  }, [currentStep?.globals, currentStep?.globalAddresses]);
+
   const frames = currentStep?.callStack ? [...currentStep.callStack].reverse() : [];
   const heap = currentStep?.heap ?? [];
   const stepAccesses = currentStep?.stepAccesses ?? [];
@@ -79,7 +99,8 @@ export function DeclarationsPanel() {
     return access ? access.kind : null;
   };
 
-  if (!currentStep || (frames.length === 0 && heap.length === 0) || status === "idle") {
+  const hasGlobals = globalVariables.length > 0 || globalArrays.length > 0;
+  if (!currentStep || (frames.length === 0 && heap.length === 0 && !hasGlobals) || status === "idle") {
     return (
       <div className="bg-blueprint-grid flex h-full flex-col items-center justify-center gap-1 p-6 text-center">
         <Layers size={24} className="text-accent/40 mb-1" />
@@ -110,15 +131,6 @@ export function DeclarationsPanel() {
     }),
   ];
 
-  // Global declarations if present
-  const globalVars: VizEntry[] = currentStep.globals
-    ? Object.entries(currentStep.globals).map(([name, value]) => ({
-        name,
-        value,
-        address: currentStep.globalAddresses?.[name],
-      }))
-    : [];
-
   return (
     <div className="flex h-full overflow-auto bg-canvas/50 p-3 gap-4">
       {/* STACK DECLARATIONS COLUMN */}
@@ -129,34 +141,90 @@ export function DeclarationsPanel() {
         </div>
 
         {/* Global Declarations Card (if any) */}
-        {globalVars.length > 0 && (
+        {(globalVariables.length > 0 || globalArrays.length > 0) && (
           <div className="rounded-md border border-border bg-surface-raised">
             <div className="flex items-center gap-2 px-2.5 py-1.5 border-b border-border">
               <Box size={13} className="text-accent" />
-              <span className="font-mono text-sm font-semibold text-fg">Global Declarations</span>
+              <span className="text-sm font-medium text-fg">Global Declarations</span>
               <span className="ml-auto rounded-full bg-accent/20 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-accent">
                 global
               </span>
             </div>
-            <div className="p-2.5 flex flex-col gap-2 font-mono text-xs">
-              {globalVars.map(({ name, value, address }) => {
-                const isPtr = value.kind === "pointer";
-                return (
-                  <div key={name} className="flex items-center justify-between gap-3 text-xs">
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      <span className="font-medium text-fg">{name}</span>
-                      {address && (
-                        <span className="text-[10px] text-fg-muted">@{formatAddress(address)}</span>
-                      )}
+
+            {/* Global Scalar & Pointer Variables */}
+            {globalVariables.length > 0 && (
+              <div className="p-2.5 flex flex-col gap-2 font-mono text-xs">
+                {globalVariables.map(({ name, value, address }) => {
+                  const isPtr = value.kind === "pointer";
+                  const isNull = isPtr && !value.target;
+                  const targetAddr = isPtr && value.target ? formatAddress(value.target) : null;
+                  const highlight = getAccessHighlight(address);
+
+                  let targetLabel = "";
+                  if (isPtr && value.target) {
+                    if (value.target.space === "heap") {
+                      const heapBlock = heap.find((b) => b.address.id === value.target!.id);
+                      targetLabel = heapBlock
+                        ? `→ ${formatAddress(value.target)}${heapBlock.active ? "" : " (freed)"}`
+                        : `→ ${formatAddress(value.target)}`;
+                    } else {
+                      const targetEntry = allEntries.find(
+                        (e) => e.address && formatAddress(e.address) === targetAddr && e.name !== name,
+                      );
+                      targetLabel = targetEntry ? `→ ${targetEntry.name}` : `→ ${targetAddr}`;
+                    }
+                  }
+
+                  let accessBg = "";
+                  if (highlight === "write") accessBg = "bg-[#f59e0b]/10 rounded px-1 -mx-1";
+                  else if (highlight === "read") accessBg = "bg-[#22d3ee]/10 rounded px-1 -mx-1";
+
+                  return (
+                    <div key={name} className={`flex flex-col gap-0.5 ${accessBg}`}>
+                      <div className="flex items-center justify-between gap-3 text-xs">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="font-medium text-fg">{name}</span>
+                          {address && (
+                            <span className="text-[10px] text-fg-muted">@{formatAddress(address)}</span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1.5 text-right shrink-0">
+                          <span className="text-fg-muted text-[11px]">{value.type}{isPtr ? " *" : ""}</span>
+                          {isPtr ? (
+                            isNull ? (
+                              <span className="text-fg-muted">NULL</span>
+                            ) : (
+                              <span className="text-accent font-medium">{targetLabel}</span>
+                            )
+                          ) : (
+                            <span className="text-fg">{formatExecutionValue(value)}</span>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-1.5 text-right shrink-0">
-                      <span className="text-fg-muted text-[11px]">{value.type}{isPtr ? " *" : ""}</span>
-                      <span className="text-fg">{formatExecutionValue(value)}</span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Global Arrays Section (reuses ExistingArrayCard) */}
+            {globalArrays.length > 0 && (
+              <div className={`${globalVariables.length > 0 ? "border-t border-border" : ""} px-2.5 py-2 flex flex-col gap-2.5`}>
+                <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-accent/80 font-mono">
+                  <Table size={12} />
+                  <span>Arrays ({globalArrays.length})</span>
+                </div>
+                <div className="flex flex-col gap-2.5">
+                  {globalArrays.map((arr) => (
+                    <ExistingArrayCard
+                      key={arr.name}
+                      arr={arr}
+                      getAccessHighlight={getAccessHighlight}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 

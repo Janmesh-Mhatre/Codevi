@@ -509,11 +509,13 @@ export function NewVisualizationPanel() {
   const isPointerGraph = !isTree && graphLayout.detectedGraph !== null;
   const isGraph = !isTree && (isPointerGraph || hasMatrixOrListGraph);
 
-  const matrixOrListLayout = useMemo(() => {
-    if (!hasMatrixOrListGraph || !matrixOrListGraph) return null;
-    const item = graphModelToStructureItem(matrixOrListGraph);
-    return layoutGraphStructures(item.nodes, item.links, heapX, TOP_PAD + 26);
-  }, [hasMatrixOrListGraph, matrixOrListGraph, heapX]);
+  const matrixOrListLayout =
+    hasMatrixOrListGraph && matrixOrListGraph
+      ? (() => {
+          const item = graphModelToStructureItem(matrixOrListGraph);
+          return layoutGraphStructures(item.nodes, item.links, heapX, TOP_PAD + 26);
+        })()
+      : null;
 
   const heapNodes: { x: number; y: number; w: number; h: number; b: HeapBlock }[] = [];
   let heapY = TOP_PAD + 26;
