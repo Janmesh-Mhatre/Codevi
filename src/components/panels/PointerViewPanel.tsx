@@ -15,6 +15,7 @@ import {
   orderHeapBlocks,
 } from "../../visualization/connectors/connectorRouting";
 import { detectPointerViewTrees } from "./pointerViewTreeLayout";
+import { detectPointerViewGraph } from "./pointerViewGraphLayout";
 import type { PointerRelationship, PointerViewVariable, HeapBlock, ExecutionValue } from "../../execution/models/executionTypes";
 
 /** Layout constants */
@@ -199,6 +200,16 @@ export function PointerViewPanel() {
     TOP_PAD + 26,
   );
 
+  // Detect graph structures in Pointer View
+  const graphLayout = detectPointerViewGraph(
+    heapBlocks,
+    relationships,
+    stackVariables,
+    heapX,
+    TOP_PAD + 26,
+    treeLayout.treeBlockIds,
+  );
+
   const heapNodes: { x: number; y: number; w: number; h: number; b: HeapBlock }[] = [];
   let heapY = TOP_PAD + 26;
   let freedDividerY: number | null = null;
@@ -219,6 +230,40 @@ export function PointerViewPanel() {
     let extraHeapY = treeLayout.maxY + ROW_GAP + 10;
     const remainingActive = orderedBlocks.filter(
       (b) => b.active && !treeLayout.treeBlockIds.has(b.address.id),
+    );
+    for (const b of remainingActive) {
+      heapNodes.push({ x: heapX, y: extraHeapY, w: HEAP_NODE_W, h: HEAP_NODE_H, b });
+      extraHeapY += HEAP_NODE_H + ROW_GAP;
+    }
+
+    // 3. Place freed heap blocks at the bottom with a divider
+    const freedBlocks = orderedBlocks.filter((b) => !b.active);
+    if (freedBlocks.length > 0) {
+      extraHeapY += 10;
+      freedDividerY = extraHeapY;
+      extraHeapY += 26;
+      for (const b of freedBlocks) {
+        heapNodes.push({ x: heapX, y: extraHeapY, w: HEAP_NODE_W, h: HEAP_NODE_H, b });
+        extraHeapY += HEAP_NODE_H + ROW_GAP;
+      }
+    }
+    heapY = extraHeapY;
+  } else if (graphLayout.detectedGraph !== null) {
+    // 1. Place graph nodes
+    for (const placed of graphLayout.allPlacedGraphNodes) {
+      heapNodes.push({
+        x: placed.x,
+        y: placed.y,
+        w: placed.w,
+        h: placed.h,
+        b: placed.b,
+      });
+    }
+
+    // 2. Place any remaining active heap blocks that are not part of any graph
+    let extraHeapY = graphLayout.maxY + ROW_GAP + 10;
+    const remainingActive = orderedBlocks.filter(
+      (b) => b.active && !graphLayout.graphBlockIds.has(b.address.id),
     );
     for (const b of remainingActive) {
       heapNodes.push({ x: heapX, y: extraHeapY, w: HEAP_NODE_W, h: HEAP_NODE_H, b });
@@ -259,20 +304,31 @@ export function PointerViewPanel() {
   // Never shifts based on pointer routing lanes, extra non-tree nodes, or SVG bounding box.
   const firstTree = treeLayout.detectedTrees[0];
   const treeRootPos = firstTree ? firstTree.placedNodes.get(firstTree.rootId) : undefined;
+  const firstGraphNode = graphLayout.allPlacedGraphNodes[0];
   const heapCenterX =
     treeRootPos
       ? Math.round(treeRootPos.x + HEAP_NODE_W / 2)
+      : firstGraphNode
+      ? Math.round(firstGraphNode.x + HEAP_NODE_W / 2)
       : Math.round(heapX + HEAP_NODE_W / 2);
 
-  // NULL target (if any non-tree pointers are NULL) — positioned at the centre of stack and heap
+  // NULL target (if any non-tree non-graph pointers are NULL) — positioned at the centre of stack and heap
   const hasCentralNull = relationships.some((r) => {
     if (r.status !== "null") return false;
-    if (r.pointerAddress?.space === "heap" && treeLayout.treeBlockIds.has(r.pointerAddress.id)) {
+    if (
+      r.pointerAddress?.space === "heap" &&
+      (treeLayout.treeBlockIds.has(r.pointerAddress.id) ||
+        graphLayout.graphBlockIds.has(r.pointerAddress.id))
+    ) {
       return false;
     }
     if (r.pointerName.startsWith("H")) {
       const match = r.pointerName.match(/^H(\d+)/);
-      if (match && treeLayout.treeBlockIds.has(parseInt(match[1], 10))) {
+      if (
+        match &&
+        (treeLayout.treeBlockIds.has(parseInt(match[1], 10)) ||
+          graphLayout.graphBlockIds.has(parseInt(match[1], 10)))
+      ) {
         return false;
       }
     }
@@ -281,9 +337,9 @@ export function PointerViewPanel() {
   const nullNodeX = PAD + NODE_W + COL_GAP / 2 - NULL_NODE_W / 2;
   const nullNodeY = Math.max(stackY, heapY) + 8;
 
-  // SVG dimensions: ensure generous width and height for wide trees, circular routes, and NULL marker
-  const svgW = Math.max(heapMaxX + 160, treeLayout.maxX + 160);
-  const svgH = Math.max(stackY, heapY, hasCentralNull ? nullNodeY + NULL_NODE_H + PAD : 0) + PAD + 30;
+  // SVG dimensions: ensure generous width and height for wide trees, graphs, and circular routes
+  const svgW = Math.max(heapMaxX + 160, treeLayout.maxX + 160, graphLayout.maxX + 160);
+  const svgH = Math.max(stackY, heapY, graphLayout.maxY, hasCentralNull ? nullNodeY + NULL_NODE_H + PAD : 0) + PAD + 30;
 
   // ------ ARROW COMPUTATION ------
   type Arrow = {
@@ -335,8 +391,11 @@ export function PointerViewPanel() {
       seenConnectorKeys.add(connKey);
 
       if (rel.status === "null") {
-        // If this heap node is part of a detected tree, skip the distant central NULL box (handled by tree local NULL indicators)
-        if (treeLayout.treeBlockIds.has(srcHeapNode.b.address.id)) {
+        // If this heap node is part of a detected tree or graph, skip the distant central NULL box
+        if (
+          treeLayout.treeBlockIds.has(srcHeapNode.b.address.id) ||
+          graphLayout.graphBlockIds.has(srcHeapNode.b.address.id)
+        ) {
           continue;
         }
         // Arrow from heap node to central NULL node
@@ -358,10 +417,12 @@ export function PointerViewPanel() {
         const tgtHeapNode = heapNodes.find((n) => n.b.address.id === rel.targetAddress!.id);
         if (
           tgtHeapNode &&
-          treeLayout.treeBlockIds.has(srcHeapNode.b.address.id) &&
-          treeLayout.treeBlockIds.has(tgtHeapNode.b.address.id)
+          ((treeLayout.treeBlockIds.has(srcHeapNode.b.address.id) &&
+            treeLayout.treeBlockIds.has(tgtHeapNode.b.address.id)) ||
+           (graphLayout.graphBlockIds.has(srcHeapNode.b.address.id) &&
+            graphLayout.graphBlockIds.has(tgtHeapNode.b.address.id)))
         ) {
-          // Tree hierarchy branches are rendered with specialized tree connectors
+          // Tree hierarchy branches and graph edges are rendered with specialized connectors
           continue;
         }
         if (tgtHeapNode) {
@@ -549,17 +610,32 @@ export function PointerViewPanel() {
             STACK
           </text>
           {heapBlocks.length > 0 && (
-            <text
-              x={heapCenterX}
-              y={TOP_PAD}
-              fill="var(--color-active)"
-              fontSize="11"
-              fontWeight="600"
-              letterSpacing="0.08em"
-              textAnchor="middle"
-            >
-              HEAP
-            </text>
+            <g>
+              <text
+                x={heapCenterX}
+                y={TOP_PAD}
+                fill="var(--color-active)"
+                fontSize="11"
+                fontWeight="600"
+                letterSpacing="0.08em"
+                textAnchor="middle"
+              >
+                HEAP
+              </text>
+              {graphLayout.detectedGraph && (
+                <text
+                  x={heapCenterX}
+                  y={TOP_PAD + 14}
+                  fill="var(--color-active)"
+                  fontSize="9"
+                  fontWeight="500"
+                  fontFamily="var(--font-mono)"
+                  textAnchor="middle"
+                >
+                  {graphLayout.detectedGraph.representationBadge}
+                </text>
+              )}
+            </g>
           )}
 
 
@@ -613,6 +689,44 @@ export function PointerViewPanel() {
               })}
             </g>
           ))}
+
+          {/* Graph connectors (rendered behind cards) */}
+          {graphLayout.detectedGraph && (
+            <g key="graph-connectors" className="graph-connectors">
+              {graphLayout.detectedGraph.graphLinks.map((link) => {
+                const markerId = getMarkerForColor(link.color);
+                return (
+                  <g key={link.id} className="graph-connector-edge">
+                    <path
+                      d={link.pathD}
+                      className={`graph-edge ${link.isSelfLoop ? "graph-edge-self-loop" : "graph-edge-directed"}`}
+                      fill="none"
+                      stroke={link.color}
+                      strokeWidth={1.8}
+                      markerEnd={`url(#${markerId})`}
+                      opacity={0.85}
+                    />
+                    {link.label && !link.isSelfLoop && (
+                      <text
+                        x={link.labelX ?? (link.x1 + link.x2) / 2}
+                        y={link.labelY ?? (link.y1 + link.y2) / 2 - 6}
+                        fill="var(--color-fg-muted)"
+                        fontSize="9"
+                        fontFamily="var(--font-mono)"
+                        textAnchor="middle"
+                        paintOrder="stroke"
+                        stroke="var(--color-surface)"
+                        strokeWidth={3}
+                        strokeLinejoin="round"
+                      >
+                        {link.label}
+                      </text>
+                    )}
+                  </g>
+                );
+              })}
+            </g>
+          )}
 
           {/* Arrows (rendered behind cards, collision-free for stack-to-heap) */}
           {arrows.map((a, i) => {
@@ -839,6 +953,8 @@ export function PointerViewPanel() {
                 <g>
                 {/* Active pointer tags pointing to this heap node */}
                 {(() => {
+                  const isGraphBlock = graphLayout.graphBlockIds.has(b.address.id);
+                  if (isGraphBlock) return null;
                   const pointingVars = stackVariables
                     .filter(
                       (v) =>
@@ -892,10 +1008,25 @@ export function PointerViewPanel() {
                   strokeDasharray={b.active ? undefined : "6 4"}
                   opacity={0.95}
                 />
-                {/* Address & status / inside BST badge */}
-                <text x={x + 8} y={y + 15} fill={borderColor} fontSize="12" fontWeight="600" fontFamily="var(--font-mono)">
-                  {addrStr}
-                </text>
+                {(() => {
+                  const isGraphBlock = graphLayout.graphBlockIds.has(b.address.id);
+                  const pointingVars = stackVariables
+                    .filter(
+                      (v) =>
+                        v.value.kind === "pointer" &&
+                        v.value.target?.space === "heap" &&
+                        v.value.target.id === b.address.id,
+                    )
+                    .map((v) => v.name);
+                  const primaryVar = pointingVars.length > 0 ? pointingVars.join(", ") : null;
+                  const headerTitle = isGraphBlock && primaryVar ? `${primaryVar} · ${addrStr}` : addrStr;
+
+                  return (
+                    <text x={x + 8} y={y + 15} fill={borderColor} fontSize="12" fontWeight="600" fontFamily="var(--font-mono)">
+                      {headerTitle}
+                    </text>
+                  );
+                })()}
                 {rootTree ? (
                   <g className="tree-status-badge">
                     <rect
@@ -925,24 +1056,64 @@ export function PointerViewPanel() {
                       {rootTree.isBST ? "Valid BST" : "BST: Invalid"}
                     </text>
                   </g>
+                ) : graphLayout.graphBlockIds.has(b.address.id) ? (
+                  <g className="graph-node-badge">
+                    <rect
+                      x={x + w - 54}
+                      y={y + 5}
+                      width={48}
+                      height={14}
+                      rx={3}
+                      fill="color-mix(in srgb, var(--color-active) 15%, transparent)"
+                      stroke={borderColor}
+                      strokeWidth={0.8}
+                    />
+                    <text
+                      x={x + w - 30}
+                      y={y + 15}
+                      fill={borderColor}
+                      fontSize={8.5}
+                      fontWeight="600"
+                      fontFamily="var(--font-mono)"
+                      textAnchor="middle"
+                    >
+                      NODE
+                    </text>
+                  </g>
                 ) : (
                   <text x={x + w - 6} y={y + 14} fill={borderColor} fontSize="9" fontWeight="500" textAnchor="end" fontFamily="var(--font-mono)">
                     {b.active ? "active" : "freed"}
                   </text>
                 )}
-                {/* Origin & size */}
-                <text x={x + 8} y={y + 30} fill="var(--color-fg-muted)" fontSize="10" fontFamily="var(--font-mono)">
-                  {b.origin} · {b.byteSize}B · {b.slotCount} slot{b.slotCount > 1 ? "s" : ""}
-                </text>
-                {/* Values */}
-                <text x={x + 8} y={y + 45} fill={b.active ? "var(--color-fg)" : "var(--color-fg-muted)"} fontSize="10" fontFamily="var(--font-mono)">
-                  [{b.values.map((v) => formatExecutionValue(v)).join(", ")}]
-                </text>
+                {/* Content: Graph node displays value/payload; normal heap dumps slots */}
+                {graphLayout.graphBlockIds.has(b.address.id) ? (
+                  <>
+                    <text x={x + 8} y={y + 31} fill="var(--color-fg-muted)" fontSize="10" fontFamily="var(--font-mono)">
+                      value: <tspan fill="var(--color-fg)" fontWeight="600">{b.values.length > 0 ? formatExecutionValue(b.values[0]) : "0"}</tspan>
+                    </text>
+                    <text x={x + 8} y={y + 46} fill="var(--color-fg-muted)" fontSize="9" opacity={0.85} fontFamily="var(--font-mono)">
+                      {b.origin} · {b.byteSize}B
+                    </text>
+                  </>
+                ) : (
+                  <>
+                    <text x={x + 8} y={y + 30} fill="var(--color-fg-muted)" fontSize="10" fontFamily="var(--font-mono)">
+                      {b.origin} · {b.byteSize}B · {b.slotCount} slot{b.slotCount > 1 ? "s" : ""}
+                    </text>
+                    <text x={x + 8} y={y + 45} fill={b.active ? "var(--color-fg)" : "var(--color-fg-muted)"} fontSize="10" fontFamily="var(--font-mono)">
+                      [{b.values.map((v) => formatExecutionValue(v)).join(", ")}]
+                    </text>
+                  </>
+                )}
 
                 {/* Pointer indicator dots on heap cards with pointer fields */}
                 {b.values.map((v, slotIdx) => {
                   if (v.kind !== "pointer") return null;
                   const isTreeBlock = treeLayout.treeBlockIds.has(b.address.id);
+                  const isGraphBlock = graphLayout.graphBlockIds.has(b.address.id);
+                  if (isTreeBlock || isGraphBlock) {
+                    return null;
+                  }
                   if (isTreeBlock) {
                     const isLeft = slotIdx === 1;
                     const isRight = slotIdx === 2;

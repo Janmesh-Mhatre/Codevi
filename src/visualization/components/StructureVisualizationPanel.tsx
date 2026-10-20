@@ -8,6 +8,7 @@ import { layoutArrayStructures } from "../layout/arrayLayout";
 import { layoutPointerGraph } from "../layout/pointerGraphLayout";
 import { layoutLinkedListStructures } from "../layout/linkedListLayout";
 import { layoutTreeStructures } from "../layout/treeLayout";
+import { layoutGraphStructures } from "../layout/graphLayout";
 import { StructureControls } from "./StructureControls";
 import { StructureCanvas } from "./StructureCanvas";
 import { StructureNodeCard } from "./StructureNodeCard";
@@ -69,6 +70,11 @@ export const StructureVisualizationPanel: React.FC = () => {
     return graph.structures.filter((s) => s.kind === "tree");
   }, [graph]);
 
+  const graphStructures = useMemo(() => {
+    if (!graph) return [];
+    return graph.structures.filter((s) => s.kind === "graph");
+  }, [graph]);
+
   const pointerStructure = useMemo(() => {
     if (!graph) return null;
     return graph.structures.find((s) => s.kind === "pointer-graph") ?? null;
@@ -101,6 +107,15 @@ export const StructureVisualizationPanel: React.FC = () => {
     const allTreeLinks = treeStructures.flatMap((s) => s.links);
     return layoutTreeStructures(allTreeNodes, allTreeLinks, 20, 20);
   }, [treeStructures]);
+
+  const graphLayout = useMemo(() => {
+    if (!graphStructures.length) {
+      return { placedNodes: [], placedLinks: [], width: 0, height: 0 };
+    }
+    const allGraphNodes = graphStructures.flatMap((s) => s.nodes);
+    const allGraphLinks = graphStructures.flatMap((s) => s.links);
+    return layoutGraphStructures(allGraphNodes, allGraphLinks, 20, 20);
+  }, [graphStructures]);
 
   const pointerGraphLayout = useMemo(() => {
     if (!pointerStructure) return null;
@@ -154,6 +169,20 @@ export const StructureVisualizationPanel: React.FC = () => {
       startY += treeLayout.height + 20;
     }
 
+    // Show graphs if filter is "all" or "graph"
+    if ((structureFilter === "all" || structureFilter === "graph") && graphLayout.placedNodes.length > 0) {
+      for (const gn of graphLayout.placedNodes) {
+        nodes.push({ ...gn, y: gn.y + startY });
+      }
+      for (const gl of graphLayout.placedLinks) {
+        links.push({
+          ...gl,
+          pathD: gl.pathD.replace(/([0-9.]+)\s+([0-9.]+)/g, (_m, x, y) => `${x} ${parseFloat(y) + startY}`),
+        });
+      }
+      startY += graphLayout.height + 20;
+    }
+
     // Show arrays if filter is "all" or "array"
     if ((structureFilter === "all" || structureFilter === "array") && placedArrayNodes.length > 0) {
       for (const an of placedArrayNodes) {
@@ -182,6 +211,7 @@ export const StructureVisualizationPanel: React.FC = () => {
       400,
       linkedListLayout.width,
       treeLayout.width,
+      graphLayout.width,
       arrayDimensions.width,
       pointerGraphLayout ? pointerGraphLayout.width : 0
     );

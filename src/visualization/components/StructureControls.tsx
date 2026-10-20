@@ -24,6 +24,7 @@ export const StructureControls: React.FC<StructureControlsProps> = ({
     { id: "array", label: "Arrays" },
     { id: "linked-list", label: "Linked Lists" },
     { id: "tree", label: "Trees" },
+    { id: "graph", label: "Graphs" },
     { id: "pointer-graph", label: "Pointers" },
   ];
 

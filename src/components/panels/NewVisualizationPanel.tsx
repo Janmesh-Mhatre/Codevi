@@ -1,5 +1,5 @@
 import { useState, useMemo, Fragment } from "react";
-import { Crosshair, MousePointerClick, Table, Layers, ArrowLeftRight, MemoryStick } from "lucide-react";
+import { Crosshair, MousePointerClick, Table, Layers, ArrowLeftRight, MemoryStick, Network } from "lucide-react";
 import { useExecutionStore } from "../../state/executionStore";
 import { formatAddress, addressesEqual, type Address } from "../../memory/memory";
 import { formatExecutionValue } from "../../execution/utils/formatValue";
@@ -15,6 +15,10 @@ import {
   orderHeapBlocks,
 } from "../../visualization/connectors/connectorRouting";
 import { detectPointerViewTrees } from "./pointerViewTreeLayout";
+import { detectPointerViewGraph } from "./pointerViewGraphLayout";
+import { detectGraphModels } from "../../visualization/detectors/graphDetector";
+import { layoutGraphStructures } from "../../visualization/layout/graphLayout";
+import { graphModelToStructureItem } from "../../visualization/models/graphTypes";
 import type {
   PointerRelationship,
   PointerViewVariable,
@@ -190,6 +194,33 @@ export function NewVisualizationPanel() {
     return hit ? hit.kind : null;
   };
 
+  // --- GRAPH DETECTION FOR UNIFIED VISUALIZATION ---
+  const graphModels = useMemo(() => {
+    return detectGraphModels(currentStep);
+  }, [currentStep]);
+
+  const matrixOrListGraph = useMemo(() => {
+    return (
+      graphModels.find(
+        (m) =>
+          m.representation === "adjacency-matrix" ||
+          m.representation === "adjacency-list",
+      ) ?? null
+    );
+  }, [graphModels]);
+
+  const graphVarNames = useMemo(() => {
+    const set = new Set<string>();
+    for (const m of graphModels) {
+      if (m.representation === "adjacency-matrix" || m.representation === "adjacency-list") {
+        if (m.metadata?.variableName && typeof m.metadata.variableName === "string") {
+          set.add(m.metadata.variableName);
+        }
+      }
+    }
+    return set;
+  }, [graphModels]);
+
   // --- DATA STRUCTURE DETECTION (Array, Stack DS, Queue DS) ---
   const { arrays, stacks, queues } = useMemo(() => {
     if (!currentStep) return { arrays: [], stacks: [], queues: [] };
@@ -356,6 +387,10 @@ export function NewVisualizationPanel() {
     }
 
     for (const [name, arr] of arrayMap) {
+      if (graphVarNames.has(name)) {
+        // Suppress array visualization for variables that qualify as Graph (Adjacency Matrix / Adjacency List)
+        continue;
+      }
       const val = arr.val;
       const address = arr.address;
       const labelLower = name.toLowerCase();
@@ -399,18 +434,19 @@ export function NewVisualizationPanel() {
     }
 
     return { arrays: arraysList, stacks: stacksList, queues: queuesList };
-  }, [currentStep, activeFrame]);
+  }, [currentStep, activeFrame, graphVarNames]);
 
   const hasDS = arrays.length > 0 || stacks.length > 0 || queues.length > 0;
 
-  // --- MEMORY / STRUCTURAL DATA (Stack Memory & Heap/Tree) ---
+  // --- MEMORY / STRUCTURAL DATA (Stack Memory & Heap/Tree/Graph) ---
   const relationships = pointerView?.relationships ?? [];
   const stackVariables = pointerView?.stackVariables ?? [];
   const heapBlocks = pointerView?.heapBlocks ?? [];
 
   const hasStack = stackVariables.length > 0;
   const hasHeap = heapBlocks.length > 0;
-  const hasMemory = hasStack || hasHeap;
+  const hasMatrixOrListGraph = matrixOrListGraph !== null;
+  const hasMemory = hasStack || hasHeap || hasMatrixOrListGraph;
 
   if (!currentStep || status === "idle") {
     return (
@@ -437,7 +473,7 @@ export function NewVisualizationPanel() {
   }
 
   // --- MEMORY LAYOUT COMPUTATION ---
-  const stackNodeW = hasHeap ? NODE_W : EXPANDED_NODE_W;
+  const stackNodeW = (hasHeap || hasMatrixOrListGraph) ? NODE_W : EXPANDED_NODE_W;
   const stackX = PAD;
 
   const stackNodes: { x: number; y: number; w: number; h: number; v: PointerViewVariable }[] = [];
@@ -461,6 +497,23 @@ export function NewVisualizationPanel() {
     TOP_PAD + 26,
   );
   const isTree = treeLayout.detectedTrees.length > 0;
+
+  const graphLayout = detectPointerViewGraph(
+    heapBlocks,
+    relationships,
+    stackVariables,
+    heapX,
+    TOP_PAD + 26,
+    treeLayout.treeBlockIds,
+  );
+  const isPointerGraph = !isTree && graphLayout.detectedGraph !== null;
+  const isGraph = !isTree && (isPointerGraph || hasMatrixOrListGraph);
+
+  const matrixOrListLayout = useMemo(() => {
+    if (!hasMatrixOrListGraph || !matrixOrListGraph) return null;
+    const item = graphModelToStructureItem(matrixOrListGraph);
+    return layoutGraphStructures(item.nodes, item.links, heapX, TOP_PAD + 26);
+  }, [hasMatrixOrListGraph, matrixOrListGraph, heapX]);
 
   const heapNodes: { x: number; y: number; w: number; h: number; b: HeapBlock }[] = [];
   let heapY = TOP_PAD + 26;
@@ -498,6 +551,40 @@ export function NewVisualizationPanel() {
         }
       }
       heapY = extraHeapY;
+    } else if (isPointerGraph && graphLayout.detectedGraph !== null) {
+      // 1. Place graph nodes
+      for (const placed of graphLayout.allPlacedGraphNodes) {
+        heapNodes.push({
+          x: placed.x,
+          y: placed.y,
+          w: placed.w,
+          h: placed.h,
+          b: placed.b,
+        });
+      }
+
+      // 2. Place any remaining active heap blocks that are not part of any graph
+      let extraHeapY = graphLayout.maxY + ROW_GAP + 10;
+      const remainingActive = orderedBlocks.filter(
+        (b) => b.active && !graphLayout.graphBlockIds.has(b.address.id),
+      );
+      for (const b of remainingActive) {
+        heapNodes.push({ x: heapX, y: extraHeapY, w: HEAP_NODE_W, h: HEAP_NODE_H, b });
+        extraHeapY += HEAP_NODE_H + ROW_GAP;
+      }
+
+      // 3. Place freed heap blocks at the bottom with a divider
+      const freedBlocks = orderedBlocks.filter((b) => !b.active);
+      if (freedBlocks.length > 0) {
+        extraHeapY += 10;
+        freedDividerY = extraHeapY;
+        extraHeapY += 26;
+        for (const b of freedBlocks) {
+          heapNodes.push({ x: heapX, y: extraHeapY, w: HEAP_NODE_W, h: HEAP_NODE_H, b });
+          extraHeapY += HEAP_NODE_H + ROW_GAP;
+        }
+      }
+      heapY = extraHeapY;
     } else {
       for (const b of orderedBlocks) {
         if (!b.active && freedDividerY === null && heapNodes.length > 0) {
@@ -511,39 +598,58 @@ export function NewVisualizationPanel() {
     }
   }
 
+  const graphMaxX = isPointerGraph ? graphLayout.maxX : 0;
+  const matrixMaxX = matrixOrListLayout ? heapX + matrixOrListLayout.width : heapX;
+  const matrixMaxY = matrixOrListLayout ? TOP_PAD + 26 + matrixOrListLayout.height : 0;
+
   const heapMaxX = heapNodes.length > 0
     ? Math.max(...heapNodes.map((n) => n.x + n.w))
-    : heapX + HEAP_NODE_W;
+    : Math.max(heapX + HEAP_NODE_W, matrixMaxX);
 
   const firstTree = treeLayout.detectedTrees[0];
   const treeRootPos = firstTree ? firstTree.placedNodes.get(firstTree.rootId) : undefined;
+  const firstGraphNode = graphLayout.allPlacedGraphNodes[0];
+  const firstMatrixNode = matrixOrListLayout?.placedNodes[0];
+
   const heapCenterX = treeRootPos
     ? Math.round(treeRootPos.x + HEAP_NODE_W / 2)
+    : firstGraphNode
+    ? Math.round(firstGraphNode.x + HEAP_NODE_W / 2)
+    : firstMatrixNode
+    ? Math.round(firstMatrixNode.x + firstMatrixNode.w / 2)
     : Math.round(heapX + HEAP_NODE_W / 2);
 
   const hasCentralNull = relationships.some((r) => {
     if (r.status !== "null") return false;
-    if (r.pointerAddress?.space === "heap" && treeLayout.treeBlockIds.has(r.pointerAddress.id)) {
+    if (
+      r.pointerAddress?.space === "heap" &&
+      (treeLayout.treeBlockIds.has(r.pointerAddress.id) ||
+        graphLayout.graphBlockIds.has(r.pointerAddress.id))
+    ) {
       return false;
     }
     if (r.pointerName.startsWith("H")) {
       const match = r.pointerName.match(/^H(\d+)/);
-      if (match && treeLayout.treeBlockIds.has(parseInt(match[1], 10))) {
+      if (
+        match &&
+        (treeLayout.treeBlockIds.has(parseInt(match[1], 10)) ||
+          graphLayout.graphBlockIds.has(parseInt(match[1], 10)))
+      ) {
         return false;
       }
     }
     return true;
   });
 
-  const nullNodeX = hasHeap && hasStack
+  const nullNodeX = (hasHeap || hasMatrixOrListGraph) && hasStack
     ? PAD + stackNodeW + COL_GAP / 2 - NULL_NODE_W / 2
     : PAD + stackNodeW / 2 - NULL_NODE_W / 2;
-  const nullNodeY = Math.max(stackY, hasHeap ? heapY : 0) + 8;
+  const nullNodeY = Math.max(stackY, hasHeap ? heapY : 0, matrixMaxY) + 8;
 
-  const svgW = hasHeap
-    ? Math.max(heapMaxX + 160, treeLayout.maxX + 160)
+  const svgW = (hasHeap || hasMatrixOrListGraph)
+    ? Math.max(heapMaxX + 160, treeLayout.maxX + 160, graphMaxX + 160, matrixMaxX + 160)
     : Math.max(stackNodeW + PAD * 2 + 60, 360);
-  const svgH = Math.max(stackY, hasHeap ? heapY : 0, hasCentralNull ? nullNodeY + NULL_NODE_H + PAD : 0) + PAD + 30;
+  const svgH = Math.max(stackY, hasHeap ? heapY : 0, matrixMaxY, graphLayout.maxY, hasCentralNull ? nullNodeY + NULL_NODE_H + PAD : 0) + PAD + 30;
 
   // Arrow computation
   type Arrow = {
@@ -593,7 +699,10 @@ export function NewVisualizationPanel() {
       seenConnectorKeys.add(connKey);
 
       if (rel.status === "null") {
-        if (treeLayout.treeBlockIds.has(srcHeapNode.b.address.id)) {
+        if (
+          treeLayout.treeBlockIds.has(srcHeapNode.b.address.id) ||
+          graphLayout.graphBlockIds.has(srcHeapNode.b.address.id)
+        ) {
           continue;
         }
         arrows.push({
@@ -613,8 +722,10 @@ export function NewVisualizationPanel() {
         const tgtHeapNode = heapNodes.find((n) => n.b.address.id === rel.targetAddress!.id);
         if (
           tgtHeapNode &&
-          treeLayout.treeBlockIds.has(srcHeapNode.b.address.id) &&
-          treeLayout.treeBlockIds.has(tgtHeapNode.b.address.id)
+          ((treeLayout.treeBlockIds.has(srcHeapNode.b.address.id) &&
+            treeLayout.treeBlockIds.has(tgtHeapNode.b.address.id)) ||
+           (graphLayout.graphBlockIds.has(srcHeapNode.b.address.id) &&
+            graphLayout.graphBlockIds.has(tgtHeapNode.b.address.id)))
         ) {
           continue;
         }
@@ -813,13 +924,13 @@ export function NewVisualizationPanel() {
                   <span>Stack (Memory)</span>
                 </div>
               )}
-              {hasHeap && (
+              {(hasHeap || hasMatrixOrListGraph) && (
                 <div
                   style={{ marginLeft: hasStack ? `${COL_GAP - 16}px` : "0px" }}
                   className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-widest text-active"
                 >
-                  <MemoryStick size={13} />
-                  <span>{isTree ? "Tree" : "Heap"}</span>
+                  {isGraph ? <Network size={13} /> : <MemoryStick size={13} />}
+                  <span>{isTree ? "Tree" : isGraph ? "Graph" : "Heap"}</span>
                 </div>
               )}
             </div>
@@ -878,18 +989,35 @@ export function NewVisualizationPanel() {
                 </text>
               )}
 
-              {hasHeap && (
-                <text
-                  x={heapCenterX}
-                  y={TOP_PAD}
-                  fill="var(--color-active)"
-                  fontSize="11"
-                  fontWeight="600"
-                  letterSpacing="0.08em"
-                  textAnchor="middle"
-                >
-                  {isTree ? "TREE" : "HEAP"}
-                </text>
+              {(hasHeap || hasMatrixOrListGraph) && (
+                <g>
+                  <text
+                    x={heapCenterX}
+                    y={TOP_PAD}
+                    fill="var(--color-active)"
+                    fontSize="11"
+                    fontWeight="600"
+                    letterSpacing="0.08em"
+                    textAnchor="middle"
+                  >
+                    {isTree ? "TREE" : isGraph ? "GRAPH" : "HEAP"}
+                  </text>
+                  {isGraph && (
+                    <text
+                      x={heapCenterX}
+                      y={TOP_PAD + 14}
+                      fill="var(--color-active)"
+                      fontSize="9"
+                      fontWeight="500"
+                      fontFamily="var(--font-mono)"
+                      textAnchor="middle"
+                    >
+                      {graphLayout.detectedGraph?.representationBadge ??
+                        matrixOrListGraph?.metadata?.representationBadge ??
+                        "Representation: Graph"}
+                    </text>
+                  )}
+                </g>
               )}
 
               {/* Central NULL node */}
@@ -941,6 +1069,76 @@ export function NewVisualizationPanel() {
                   })}
                 </g>
               ))}
+
+              {/* Graph connectors (rendered behind cards) */}
+              {graphLayout.detectedGraph && (
+                <g key="graph-connectors" className="graph-connectors">
+                  {graphLayout.detectedGraph.graphLinks.map((link) => {
+                    const markerId = getMarkerForColor(link.color);
+                    return (
+                      <g key={link.id} className="graph-connector-edge">
+                        <path
+                          d={link.pathD}
+                          className={`graph-edge ${link.isSelfLoop ? "graph-edge-self-loop" : "graph-edge-directed"}`}
+                          fill="none"
+                          stroke={link.color}
+                          strokeWidth={1.8}
+                          markerEnd={`url(#${markerId})`}
+                          opacity={0.85}
+                        />
+                        {link.label && !link.isSelfLoop && (
+                          <text
+                            x={link.labelX ?? (link.x1 + link.x2) / 2}
+                            y={link.labelY ?? (link.y1 + link.y2) / 2 - 6}
+                            fill="var(--color-fg-muted)"
+                            fontSize="9"
+                            fontFamily="var(--font-mono)"
+                            textAnchor="middle"
+                            paintOrder="stroke"
+                            stroke="var(--color-surface)"
+                            strokeWidth={3}
+                            strokeLinejoin="round"
+                          >
+                            {link.label}
+                          </text>
+                        )}
+                      </g>
+                    );
+                  })}
+                </g>
+              )}
+
+              {/* Adjacency Matrix / List Graph Connectors */}
+              {matrixOrListLayout && (
+                <g key="matrix-graph-connectors" className="graph-connectors">
+                  {matrixOrListLayout.placedLinks.map((pl, idx) => (
+                    <g key={`matrix-link-${idx}`} className="graph-connector-edge">
+                      <path
+                        d={pl.pathD}
+                        className="graph-edge graph-edge-directed"
+                        fill="none"
+                        stroke={pl.color}
+                        strokeWidth={1.8}
+                        strokeDasharray={pl.dash}
+                        markerEnd={`url(#${pl.markerId})`}
+                        opacity={0.85}
+                      />
+                      {pl.link.label && (
+                        <text
+                          x={0}
+                          y={0}
+                          fill="var(--color-fg-muted)"
+                          fontSize="9"
+                          fontFamily="var(--font-mono)"
+                          textAnchor="middle"
+                        >
+                          {pl.link.label}
+                        </text>
+                      )}
+                    </g>
+                  ))}
+                </g>
+              )}
 
               {/* Connectors / Arrows */}
               {arrows.map((a, i) => {
@@ -1214,6 +1412,8 @@ export function NewVisualizationPanel() {
                     <g>
                       {/* Active pointer tags */}
                       {(() => {
+                        const isGraphBlock = graphLayout.graphBlockIds.has(b.address.id);
+                        if (isGraphBlock) return null;
                         const pointingVars = stackVariables
                           .filter(
                             (v) =>
@@ -1267,7 +1467,7 @@ export function NewVisualizationPanel() {
                         strokeDasharray={b.active ? undefined : "6 4"}
                         opacity={0.95}
                       />
-                      {/* MemoryStick Icon from Declarations */}
+                      {/* MemoryStick or Network Icon */}
                       <g
                         transform={`translate(${x + 8}, ${y + 5}) scale(0.65)`}
                         stroke={borderColor}
@@ -1276,16 +1476,44 @@ export function NewVisualizationPanel() {
                         strokeLinecap="round"
                         strokeLinejoin="round"
                       >
-                        <path d="M6 19v-3" />
-                        <path d="M10 19v-3" />
-                        <path d="M14 19v-3" />
-                        <path d="M18 19v-2" />
-                        <path d="m2 12 5-5h10l5 5" />
-                        <path d="m2 12 5 5h10l5-5" />
+                        {graphLayout.graphBlockIds.has(b.address.id) ? (
+                          <>
+                            <rect x="16" y="16" width="6" height="6" rx="1" />
+                            <rect x="2" y="16" width="6" height="6" rx="1" />
+                            <rect x="9" y="2" width="6" height="6" rx="1" />
+                            <path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3" />
+                            <path d="M12 12V8" />
+                          </>
+                        ) : (
+                          <>
+                            <path d="M6 19v-3" />
+                            <path d="M10 19v-3" />
+                            <path d="M14 19v-3" />
+                            <path d="M18 19v-2" />
+                            <path d="m2 12 5-5h10l5 5" />
+                            <path d="m2 12 5 5h10l5-5" />
+                          </>
+                        )}
                       </g>
-                      <text x={x + 24} y={y + 15} fill={borderColor} fontSize="12" fontWeight="600" fontFamily="var(--font-mono)">
-                        {addrStr}
-                      </text>
+                      {(() => {
+                        const isGraphBlock = graphLayout.graphBlockIds.has(b.address.id);
+                        const pointingVars = stackVariables
+                          .filter(
+                            (v) =>
+                              v.value.kind === "pointer" &&
+                              v.value.target?.space === "heap" &&
+                              v.value.target.id === b.address.id,
+                          )
+                          .map((v) => v.name);
+                        const primaryVar = pointingVars.length > 0 ? pointingVars.join(", ") : null;
+                        const headerTitle = isGraphBlock && primaryVar ? `${primaryVar} · ${addrStr}` : addrStr;
+
+                        return (
+                          <text x={x + 24} y={y + 15} fill={borderColor} fontSize="12" fontWeight="600" fontFamily="var(--font-mono)">
+                            {headerTitle}
+                          </text>
+                        );
+                      })()}
                       {rootTree ? (
                         <g className="tree-status-badge">
                           <rect
@@ -1315,6 +1543,30 @@ export function NewVisualizationPanel() {
                             {rootTree.isBST ? "Valid BST" : "BST: Invalid"}
                           </text>
                         </g>
+                      ) : graphLayout.graphBlockIds.has(b.address.id) ? (
+                        <g className="graph-node-badge">
+                          <rect
+                            x={x + w - 54}
+                            y={y + 5}
+                            width={48}
+                            height={14}
+                            rx={3}
+                            fill="color-mix(in srgb, var(--color-active) 15%, transparent)"
+                            stroke={borderColor}
+                            strokeWidth={0.8}
+                          />
+                          <text
+                            x={x + w - 30}
+                            y={y + 15}
+                            fill={borderColor}
+                            fontSize={8.5}
+                            fontWeight="600"
+                            fontFamily="var(--font-mono)"
+                            textAnchor="middle"
+                          >
+                            NODE
+                          </text>
+                        </g>
                       ) : (
                         <g className="heap-status-badge">
                           <rect
@@ -1340,41 +1592,34 @@ export function NewVisualizationPanel() {
                           </text>
                         </g>
                       )}
-                      <text x={x + 8} y={y + 30} fill="var(--color-fg-muted)" fontSize="10" fontFamily="var(--font-mono)">
-                        {truncateString(`${b.origin} · ${b.byteSize}B · ${b.slotCount} slot${b.slotCount > 1 ? "s" : ""}`, 24)}
-                      </text>
-                      <text x={x + 8} y={y + 45} fill={b.active ? "var(--color-fg)" : "var(--color-fg-muted)"} fontSize="10" fontFamily="var(--font-mono)">
-                        {truncateString(`[${b.values.map((v) => formatExecutionValue(v)).join(", ")}]`, 22)}
-                      </text>
+
+                      {/* Content: Graph node displays clean Node label + value/payload; normal heap dumps slots */}
+                      {graphLayout.graphBlockIds.has(b.address.id) ? (
+                        <>
+                          <text x={x + 8} y={y + 31} fill="var(--color-fg-muted)" fontSize="10" fontFamily="var(--font-mono)">
+                            value: <tspan fill="var(--color-fg)" fontWeight="600">{b.values.length > 0 ? formatExecutionValue(b.values[0]) : "0"}</tspan>
+                          </text>
+                          <text x={x + 8} y={y + 46} fill="var(--color-fg-muted)" fontSize="9" opacity={0.85} fontFamily="var(--font-mono)">
+                            {truncateString(`${b.origin} · ${b.byteSize}B`, 24)}
+                          </text>
+                        </>
+                      ) : (
+                        <>
+                          <text x={x + 8} y={y + 30} fill="var(--color-fg-muted)" fontSize="10" fontFamily="var(--font-mono)">
+                            {truncateString(`${b.origin} · ${b.byteSize}B · ${b.slotCount} slot${b.slotCount > 1 ? "s" : ""}`, 24)}
+                          </text>
+                          <text x={x + 8} y={y + 45} fill={b.active ? "var(--color-fg)" : "var(--color-fg-muted)"} fontSize="10" fontFamily="var(--font-mono)">
+                            {truncateString(`[${b.values.map((v) => formatExecutionValue(v)).join(", ")}]`, 22)}
+                          </text>
+                        </>
+                      )}
 
                       {b.values.map((v, slotIdx) => {
                         if (v.kind !== "pointer") return null;
                         const isTreeBlock = treeLayout.treeBlockIds.has(b.address.id);
-                        if (isTreeBlock) {
-                          const isLeft = slotIdx === 1;
-                          const isRight = slotIdx === 2;
-                          const dotX = isLeft ? x + w * 0.35 : isRight ? x + w * 0.65 : x + w;
-                          const dotY = isLeft || isRight ? y + h : y + 44;
-                          const dotColor = isLeft
-                            ? v.target === null
-                              ? "var(--color-fg-muted)"
-                              : "var(--color-accent)"
-                            : isRight
-                            ? v.target === null
-                              ? "var(--color-fg-muted)"
-                              : "var(--color-active)"
-                            : "var(--color-accent)";
-                          return (
-                            <circle
-                              key={slotIdx}
-                              cx={dotX}
-                              cy={dotY}
-                              r={3.5}
-                              fill={dotColor}
-                              stroke="var(--color-surface-raised)"
-                              strokeWidth={1.5}
-                            />
-                          );
+                        const isGraphBlock = graphLayout.graphBlockIds.has(b.address.id);
+                        if (isTreeBlock || isGraphBlock) {
+                          return null;
                         }
                         const dotY = slotIdx === 2 ? y + 34 : y + 44;
                         const field = slotIdx === 1 ? "next" : slotIdx === 2 ? "prev" : `slot${slotIdx}`;
@@ -1393,6 +1638,93 @@ export function NewVisualizationPanel() {
                       })}
                     </g>
                   </Fragment>
+                );
+              })}
+
+              {/* Adjacency Matrix / List Graph Nodes */}
+              {matrixOrListLayout && matrixOrListLayout.placedNodes.map(({ x, y, w, h, node }) => {
+                const valObj = node.slots[0]?.value;
+                const valStr = valObj ? formatExecutionValue(valObj) : "0";
+                return (
+                  <g key={node.id} className="matrix-graph-node">
+                    <rect
+                      x={x}
+                      y={y}
+                      width={w}
+                      height={h}
+                      rx={6}
+                      fill="color-mix(in srgb, var(--color-active) 8%, var(--color-surface-raised))"
+                      stroke="var(--color-active)"
+                      strokeWidth={1}
+                      opacity={0.95}
+                    />
+                    <g
+                      transform={`translate(${x + 8}, ${y + 5}) scale(0.65)`}
+                      stroke="var(--color-active)"
+                      strokeWidth={1.8}
+                      fill="none"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <rect x="16" y="16" width="6" height="6" rx="1" />
+                      <rect x="2" y="16" width="6" height="6" rx="1" />
+                      <rect x="9" y="2" width="6" height="6" rx="1" />
+                      <path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3" />
+                      <path d="M12 12V8" />
+                    </g>
+                    <text
+                      x={x + 24}
+                      y={y + 15}
+                      fill="var(--color-active)"
+                      fontSize="12"
+                      fontWeight="600"
+                      fontFamily="var(--font-mono)"
+                    >
+                      {node.label}
+                    </text>
+                    <g className="graph-node-badge">
+                      <rect
+                        x={x + w - 46}
+                        y={y + 5}
+                        width={40}
+                        height={14}
+                        rx={3}
+                        fill="color-mix(in srgb, var(--color-active) 15%, transparent)"
+                        stroke="var(--color-active)"
+                        strokeWidth={0.8}
+                      />
+                      <text
+                        x={x + w - 26}
+                        y={y + 15}
+                        fill="var(--color-active)"
+                        fontSize="8.5"
+                        fontWeight="600"
+                        fontFamily="var(--font-mono)"
+                        textAnchor="middle"
+                      >
+                        {node.id.replace("v_", "V")}
+                      </text>
+                    </g>
+                    <text
+                      x={x + 8}
+                      y={y + 32}
+                      fill="var(--color-fg-muted)"
+                      fontSize="10"
+                      fontFamily="var(--font-mono)"
+                    >
+                      value: <tspan fill="var(--color-fg)" fontWeight="600">{valStr}</tspan>
+                    </text>
+                    <text
+                      x={x + 8}
+                      y={y + 46}
+                      fill="var(--color-fg-muted)"
+                      fontSize="9"
+                      opacity={0.8}
+                      fontFamily="var(--font-mono)"
+                    >
+                      @{node.id.replace("v_", "V00")}
+                    </text>
+                  </g>
                 );
               })}
             </svg>

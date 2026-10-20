@@ -7,6 +7,8 @@ import type {
   StructureSlot,
   StructureLink,
 } from "../models/structureTypes";
+import { detectGraphModels } from "./graphDetector";
+import { graphModelToStructureItem } from "../models/graphTypes";
 
 /**
  * Extracts all active data structures (arrays, heap blocks, pointer networks)
@@ -49,6 +51,9 @@ export function extractStructureGraph(step: ExecutionStep | null): StructureGrap
   if (activeFrame) {
     extractBinaryHeaps(step, activeFrame, structures);
   }
+
+  // Phase 6.5: Detect Graphs (Adjacency Matrix, Adjacency List, Pointer Graphs)
+  extractGraphs(step, structures);
 
   return {
     structures,
@@ -1074,6 +1079,10 @@ function extractTrees(step: ExecutionStep, out: StructureItem[]): void {
     }
   }
 
+  // A binary tree cannot have nodes with multiple parents (in-degree > 1)
+  const hasMultipleParents = Array.from(inDegree.values()).some((deg) => deg > 1);
+  if (hasMultipleParents) return;
+
   // Find root candidates
   const rootCandidates: string[] = [];
   const preferredNames = ["root", "tree", "bst", "t"];
@@ -1435,5 +1444,36 @@ function extractBinaryHeaps(
     }
 
     struct.name = `${heapType}: ${node.label}`;
+  }
+}
+
+/**
+ * Phase 6.5: Extracts normalized Graph models (Adjacency Matrix, Adjacency List, Pointer Graphs)
+ * and incorporates them as StructureItems.
+ */
+function extractGraphs(step: ExecutionStep, out: StructureItem[]): void {
+  const models = detectGraphModels(step);
+  for (const model of models) {
+    const item = graphModelToStructureItem(model);
+    out.push(item);
+
+    // If it's matrix or list backed by a local array, clean up duplicate raw array structure
+    if (model.representation === "adjacency-matrix") {
+      const varName = model.metadata?.variableName as string | undefined;
+      if (varName) {
+        const idx = out.findIndex((s) => s.id === `array:${varName}`);
+        if (idx !== -1) {
+          out.splice(idx, 1);
+        }
+      }
+    } else if (model.representation === "adjacency-list") {
+      const varName = model.metadata?.variableName as string | undefined;
+      if (varName) {
+        const idx = out.findIndex((s) => s.id === `array:${varName}`);
+        if (idx !== -1) {
+          out.splice(idx, 1);
+        }
+      }
+    }
   }
 }

@@ -240,6 +240,18 @@ export function detectPointerViewTrees(
     }
   }
 
+  // A binary tree cannot have nodes with multiple parents (in-degree > 1)
+  const hasMultipleParents = Array.from(inDegree.values()).some((deg) => deg > 1);
+  if (hasMultipleParents) {
+    return {
+      detectedTrees: [],
+      treeBlockIds: new Set(),
+      allPlacedTreeNodes: [],
+      maxX: heapStartX,
+      maxY: heapStartY,
+    };
+  }
+
   // Candidate roots: nodes with in-degree === 0
   const candidateRoots: number[] = [];
   for (const [id, deg] of inDegree.entries()) {
