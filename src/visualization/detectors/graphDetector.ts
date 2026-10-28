@@ -22,10 +22,8 @@ export function detectGraphModels(step: ExecutionStep | null): GraphModel[] {
     step.callStack[step.callStack.length - 1];
 
   // 1. Detect Adjacency Matrix graphs
-  if (activeFrame) {
-    const matrixGraphs = detectAdjacencyMatrixGraphs(activeFrame, step.globals);
-    models.push(...matrixGraphs);
-  }
+  const matrixGraphs = detectAdjacencyMatrixGraphs(step);
+  models.push(...matrixGraphs);
 
   // 2. Detect Adjacency List graphs
   if (activeFrame) {
@@ -45,15 +43,50 @@ export function detectGraphModels(step: ExecutionStep | null): GraphModel[] {
 // ---------------------------------------------------------------------------
 
 function detectAdjacencyMatrixGraphs(
-  frame: StackFrame,
+  stepOrFrame: ExecutionStep | StackFrame,
   globals?: Record<string, ExecutionValue>,
 ): GraphModel[] {
   const models: GraphModel[] = [];
-  const allVars: [string, ExecutionValue][] = [
-    ...Object.entries(frame.parameters),
-    ...Object.entries(frame.locals),
-    ...(globals ? Object.entries(globals) : []),
-  ];
+  const allVars: [string, ExecutionValue][] = [];
+  const seenVarNames = new Set<string>();
+
+  if ("callStack" in stepOrFrame) {
+    // ExecutionStep: collect from globals and all stack frames
+    if (stepOrFrame.globals) {
+      for (const [k, v] of Object.entries(stepOrFrame.globals)) {
+        if (!seenVarNames.has(k)) {
+          seenVarNames.add(k);
+          allVars.push([k, v]);
+        }
+      }
+    }
+    for (const frame of stepOrFrame.callStack) {
+      for (const [k, v] of Object.entries(frame.parameters)) {
+        if (!seenVarNames.has(k)) {
+          seenVarNames.add(k);
+          allVars.push([k, v]);
+        }
+      }
+      for (const [k, v] of Object.entries(frame.locals)) {
+        if (!seenVarNames.has(k)) {
+          seenVarNames.add(k);
+          allVars.push([k, v]);
+        }
+      }
+    }
+  } else {
+    // StackFrame
+    for (const [k, v] of [
+      ...Object.entries(stepOrFrame.parameters),
+      ...Object.entries(stepOrFrame.locals),
+      ...(globals ? Object.entries(globals) : []),
+    ]) {
+      if (!seenVarNames.has(k)) {
+        seenVarNames.add(k);
+        allVars.push([k, v]);
+      }
+    }
+  }
 
   const graphKeywords = ["graph", "adj", "adjacency", "network", "edges"];
 
@@ -71,7 +104,8 @@ function detectAdjacencyMatrixGraphs(
     const lowerName = varName.toLowerCase();
     const hasKeyword =
       graphKeywords.some((kw) => lowerName.includes(kw)) ||
-      lowerName === "g";
+      /^g\d*$/i.test(lowerName) ||
+      /^g_\d+$/i.test(lowerName);
 
     // Inspect values: extract numbers
     const flatValues = val.values.map((v) =>
@@ -92,11 +126,11 @@ function detectAdjacencyMatrixGraphs(
     for (let i = 0; i < N; i++) {
       const charLabel = N <= 26 ? String.fromCharCode(65 + i) : `${i}`;
       nodes.push({
-        id: `v_${i}`,
+        id: `${varName}_v_${i}`,
         label: `Node ${charLabel}`,
         value: i,
         type: "int",
-        metadata: { index: i },
+        metadata: { index: i, variableName: varName },
       });
     }
 
@@ -108,13 +142,40 @@ function detectAdjacencyMatrixGraphs(
         if (weight !== 0) {
           if (r === c) hasSelfLoops = true;
           edges.push({
-            id: `e_${r}_${c}`,
-            source: `v_${r}`,
-            target: `v_${c}`,
+            id: `e_${varName}_${r}_${c}`,
+            source: `${varName}_v_${r}`,
+            target: `${varName}_v_${c}`,
             directed: true,
             label: weight !== 1 ? `${weight}` : undefined,
             metadata: { weight, row: r, col: c },
           });
+        }
+      }
+    }
+
+    // Detect directed cycles in adjacency matrix using 3-color DFS
+    let hasCycles = false;
+    if (hasSelfLoops) {
+      hasCycles = true;
+    } else {
+      const visitState = new Array<number>(N).fill(0); // 0=unvisited, 1=visiting, 2=visited
+      function dfsCycle(u: number): boolean {
+        visitState[u] = 1;
+        for (let v = 0; v < N; v++) {
+          if (flatValues[u * N + v] !== 0) {
+            if (visitState[v] === 1) return true;
+            if (visitState[v] === 0 && dfsCycle(v)) return true;
+          }
+        }
+        visitState[u] = 2;
+        return false;
+      }
+      for (let i = 0; i < N; i++) {
+        if (visitState[i] === 0) {
+          if (dfsCycle(i)) {
+            hasCycles = true;
+            break;
+          }
         }
       }
     }
@@ -131,6 +192,7 @@ function detectAdjacencyMatrixGraphs(
         variableName: varName,
         matrixSize: N,
         hasSelfLoops,
+        hasCycles,
       },
     });
   }

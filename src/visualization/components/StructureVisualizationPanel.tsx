@@ -226,7 +226,7 @@ export const StructureVisualizationPanel: React.FC = () => {
       canvasW: maxW,
       canvasH: maxH,
     };
-  }, [structureFilter, linkedListLayout, treeLayout, placedArrayNodes, arrayDimensions, pointerGraphLayout]);
+  }, [structureFilter, linkedListLayout, treeLayout, graphLayout, placedArrayNodes, arrayDimensions, pointerGraphLayout]);
 
   // Handler for stepping to the next structural mutation
   const handleStepStructure = () => {

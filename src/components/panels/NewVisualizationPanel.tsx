@@ -1157,7 +1157,7 @@ export function NewVisualizationPanel() {
                           markerEnd={`url(#${markerId})`}
                           opacity={0.85}
                         />
-                        {link.label && !link.isSelfLoop && (
+                        {link.label && (
                           <text
                             x={link.labelX ?? (link.x1 + link.x2) / 2}
                             y={link.labelY ?? (link.y1 + link.y2) / 2 - 6}

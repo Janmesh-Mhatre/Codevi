@@ -386,15 +386,15 @@ export function detectPointerViewGraph(
       const fieldName = edge.rel.fieldName ?? "next";
       const edgeColor = getFieldColor(fieldName, edge.rel.status);
 
-      // 1. Self-loop
+      // 1. Self-loop (routed below the node's bottom boundary)
       if (edge.targetId === b.address.id) {
         const x1 = srcCoords.x + srcCoords.w - 28;
-        const y1 = srcCoords.y;
+        const y1 = srcCoords.y + srcCoords.h;
         const x2 = srcCoords.x + 28;
-        const y2 = srcCoords.y;
+        const y2 = srcCoords.y + srcCoords.h;
         const loopH = 34;
 
-        const pathD = `M ${x1} ${y1} C ${x1 + 14} ${y1 - loopH}, ${x2 - 14} ${y2 - loopH}, ${x2} ${y2}`;
+        const pathD = `M ${x1} ${y1} C ${x1 + 14} ${y1 + loopH}, ${x2 - 14} ${y2 + loopH}, ${x2} ${y2}`;
 
         graphLinks.push({
           id: `g_link_${b.address.id}_self`,
@@ -409,7 +409,7 @@ export function detectPointerViewGraph(
           label: fieldName,
           isSelfLoop: true,
           labelX: srcCoords.x + srcCoords.w / 2,
-          labelY: srcCoords.y - loopH - 4,
+          labelY: y1 + loopH + 14,
         });
         continue;
       }
@@ -427,22 +427,55 @@ export function detectPointerViewGraph(
       let labelX: number, labelY: number;
 
       if (isDownward) {
-        // Forward downward edge: distribute exit and entry anchors based on relative direction
-        const dx = tgtCoords.x - srcCoords.x;
-        const srcRatio = dx < -20 ? 0.35 : dx > 20 ? 0.65 : 0.5;
-        const tgtRatio = dx < -20 ? 0.68 : dx > 20 ? 0.32 : 0.5;
+        const minY = srcCoords.y + srcCoords.h;
+        const maxY = tgtCoords.y;
 
-        x1 = srcCoords.x + srcCoords.w * srcRatio + pairIdx * 12;
-        y1 = srcCoords.y + srcCoords.h;
-        x2 = tgtCoords.x + tgtCoords.w * tgtRatio + pairIdx * 12;
-        y2 = tgtCoords.y;
+        let hasObstacle = false;
+        let maxObstacleRight = Math.max(srcCoords.x + srcCoords.w, tgtCoords.x + tgtCoords.w);
 
-        const dy = y2 - y1;
-        const cp = Math.max(20, dy * 0.45);
-        pathD = `M ${x1} ${y1} C ${x1} ${y1 + cp}, ${x2} ${y2 - cp}, ${x2} ${y2}`;
+        for (const [id, node] of placedMap.entries()) {
+          if (id === b.address.id || id === edge.targetId) continue;
+          const vertBetween = node.y + 4 < maxY && node.y + node.h - 4 > minY;
+          if (!vertBetween) continue;
 
-        labelX = (x1 + x2) / 2;
-        labelY = (y1 + y2) / 2;
+          const corridorLeft = Math.min(srcCoords.x, tgtCoords.x) - 16;
+          const corridorRight = Math.max(srcCoords.x + srcCoords.w, tgtCoords.x + tgtCoords.w) + 16;
+          if (node.x + node.w > corridorLeft && node.x < corridorRight) {
+            hasObstacle = true;
+            maxObstacleRight = Math.max(maxObstacleRight, node.x + node.w);
+          }
+        }
+
+        if (hasObstacle) {
+          // Skip-layer cross-edge: route around intermediate obstacles on the outer right perimeter
+          const loopX = maxObstacleRight + 32 + pairIdx * 14;
+          x1 = srcCoords.x + srcCoords.w;
+          y1 = srcCoords.y + srcCoords.h * 0.5;
+          x2 = tgtCoords.x + tgtCoords.w;
+          y2 = tgtCoords.y + tgtCoords.h * 0.5;
+
+          pathD = `M ${x1} ${y1} C ${loopX} ${y1}, ${loopX} ${y2}, ${x2} ${y2}`;
+          labelX = loopX + 10;
+          labelY = (y1 + y2) / 2;
+          maxX = Math.max(maxX, loopX + 30);
+        } else {
+          // Forward downward edge: distribute exit and entry anchors based on relative direction
+          const dx = tgtCoords.x - srcCoords.x;
+          const srcRatio = dx < -20 ? 0.35 : dx > 20 ? 0.65 : 0.5;
+          const tgtRatio = dx < -20 ? 0.68 : dx > 20 ? 0.32 : 0.5;
+
+          x1 = srcCoords.x + srcCoords.w * srcRatio + pairIdx * 12;
+          y1 = srcCoords.y + srcCoords.h;
+          x2 = tgtCoords.x + tgtCoords.w * tgtRatio + pairIdx * 12;
+          y2 = tgtCoords.y;
+
+          const dy = y2 - y1;
+          const cp = Math.max(20, dy * 0.45);
+          pathD = `M ${x1} ${y1} C ${x1} ${y1 + cp}, ${x2} ${y2 - cp}, ${x2} ${y2}`;
+
+          labelX = (x1 + x2) / 2;
+          labelY = (y1 + y2) / 2;
+        }
       } else if (isSameLayer) {
         // Horizontal connection on same layer
         const isFwd = tgtCoords.x > srcCoords.x;

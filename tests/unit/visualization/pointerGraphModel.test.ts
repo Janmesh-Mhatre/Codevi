@@ -3,6 +3,7 @@ import { detectGraphModels } from "../../../src/visualization/detectors/graphDet
 import { extractStructureGraph } from "../../../src/visualization/detectors/structureDetector";
 import { layoutGraphStructures } from "../../../src/visualization/layout/graphLayout";
 import { graphModelToStructureItem } from "../../../src/visualization/models/graphTypes";
+import { detectPointerViewGraph } from "../../../src/components/panels/pointerViewGraphLayout";
 import type {
   ExecutionStep,
   StackFrame,
@@ -400,6 +401,39 @@ describe("Phase 6.5.2: Pointer-Based Graphs", () => {
       "heap:H001->heap:H003",
       "heap:H002->heap:H003",
     ]);
+
+    // Test A Geometric Assertions: layoutGraphStructures
+    const item = graphModelToStructureItem(graph);
+    const layout = layoutGraphStructures(item.nodes, item.links, 200, 50);
+    const nodeB = layout.placedNodes.find((n) => n.node.id === "graph:node:heap:H002")!;
+    const edgeAC = layout.placedLinks.find(
+      (l) => l.link.sourceNodeId === "graph:node:heap:H001" && l.link.targetNodeId === "graph:node:heap:H003",
+    )!;
+
+    // A -> C bypasses node B on the right side
+    const matchC = edgeAC.pathD.match(/C\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)/);
+    expect(matchC).not.toBeNull();
+    const loopX = parseFloat(matchC![1]);
+    expect(loopX).toBeGreaterThan(nodeB.x + nodeB.w);
+
+    // Test A Geometric Assertions: detectPointerViewGraph
+    const pvLayout = detectPointerViewGraph(
+      heap,
+      step.pointerView!.relationships,
+      step.pointerView!.stackVariables,
+      200,
+      50,
+      new Set(),
+    );
+    expect(pvLayout.detectedGraph).not.toBeNull();
+    const pvNodeB = pvLayout.allPlacedGraphNodes.find((n) => n.b.address.id === 2)!;
+    const pvEdgeAC = pvLayout.detectedGraph!.graphLinks.find(
+      (l) => l.sourceId === 1 && l.targetId === 3,
+    )!;
+    const pvMatchC = pvEdgeAC.pathD.match(/C\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)/);
+    expect(pvMatchC).not.toBeNull();
+    const pvLoopX = parseFloat(pvMatchC![1]);
+    expect(pvLoopX).toBeGreaterThan(pvNodeB.x + pvNodeB.w);
   });
 
   // -------------------------------------------------------------------------
@@ -541,6 +575,39 @@ describe("Phase 6.5.2: Pointer-Based Graphs", () => {
     expect(graph.metadata?.hasSelfLoops).toBe(true);
     expect(graph.edges[0].source).toBe("heap:H001");
     expect(graph.edges[0].target).toBe("heap:H001");
+
+    // Test B Geometric Assertions: layoutGraphStructures
+    const item = graphModelToStructureItem(graph);
+    const layout = layoutGraphStructures(item.nodes, item.links, 200, 50);
+    const nodeA = layout.placedNodes.find((n) => n.node.id === "graph:node:heap:H001")!;
+    const selfLink = layout.placedLinks.find(
+      (l) => l.link.sourceNodeId === "graph:node:heap:H001" && l.link.targetNodeId === "graph:node:heap:H001",
+    )!;
+
+    // Loop must start and end at node bottom boundary and loop below it
+    const selfMatch = selfLink.pathD.match(/M\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+C\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)/);
+    expect(selfMatch).not.toBeNull();
+    const startY = parseFloat(selfMatch![2]);
+    const cpY = parseFloat(selfMatch![4]);
+    expect(startY).toBe(nodeA.y + nodeA.h);
+    expect(cpY).toBeGreaterThan(nodeA.y + nodeA.h);
+    expect(selfLink.labelY!).toBeGreaterThan(nodeA.y + nodeA.h);
+
+    // Test B Geometric Assertions: detectPointerViewGraph
+    const pvLayout = detectPointerViewGraph(
+      heap,
+      step.pointerView!.relationships,
+      step.pointerView!.stackVariables,
+      200,
+      50,
+      new Set(),
+    );
+    expect(pvLayout.detectedGraph).not.toBeNull();
+    const pvNodeA = pvLayout.allPlacedGraphNodes.find((n) => n.b.address.id === 1)!;
+    const pvSelfLink = pvLayout.detectedGraph!.graphLinks[0];
+    expect(pvSelfLink.isSelfLoop).toBe(true);
+    expect(pvSelfLink.y1).toBe(pvNodeA.y + pvNodeA.h);
+    expect(pvSelfLink.labelY!).toBeGreaterThan(pvNodeA.y + pvNodeA.h);
   });
 
   // -------------------------------------------------------------------------

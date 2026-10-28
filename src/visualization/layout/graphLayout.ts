@@ -227,20 +227,17 @@ export function layoutGraphStructures(
     const srcCoords = placedNodeCoords.get(link.sourceNodeId);
     if (!srcCoords) continue;
 
-    // 1. Self-loop
+    // 1. Self-loop (routed below the node's bottom boundary)
     if (link.targetNodeId === link.sourceNodeId) {
       const x1 = srcCoords.x + srcCoords.w - 24;
-      const y1 = srcCoords.y;
+      const y1 = srcCoords.y + srcCoords.h;
       const x2 = srcCoords.x + 24;
-      const y2 = srcCoords.y;
-      const maxLoopHeight = 36;
-      // Guarantee loop does not intrude into header/badge region (startY + 24)
-      const minAllowedApexY = startY + 24;
-      const loopHeight = Math.min(maxLoopHeight, Math.max(18, y1 - minAllowedApexY));
+      const y2 = srcCoords.y + srcCoords.h;
+      const loopHeight = 34;
 
-      const pathD = `M ${x1} ${y1} C ${x1 + 16} ${y1 - loopHeight}, ${x2 - 16} ${y2 - loopHeight}, ${x2} ${y2}`;
+      const pathD = `M ${x1} ${y1} C ${x1 + 16} ${y1 + loopHeight}, ${x2 - 16} ${y2 + loopHeight}, ${x2} ${y2}`;
       const labelX = (x1 + x2) / 2;
-      const labelY = y1 - loopHeight - 4;
+      const labelY = y1 + loopHeight + 14;
 
       placedLinks.push({
         link,
@@ -270,58 +267,165 @@ export function layoutGraphStructures(
     let labelY: number;
 
     if (isDownward) {
-      // Normal downward / forward edge
-      const dx = tgtCoords.x - srcCoords.x;
-      const srcRatio = dx < -20 ? 0.35 : dx > 20 ? 0.65 : 0.5;
-      const tgtRatio = dx < -20 ? 0.68 : dx > 20 ? 0.32 : 0.5;
+      const minY = srcCoords.y + srcCoords.h;
+      const maxY = tgtCoords.y;
 
-      const x1 = srcCoords.x + srcCoords.w * srcRatio + pairIndex * 12;
-      const y1 = srcCoords.y + srcCoords.h;
-      const x2 = tgtCoords.x + tgtCoords.w * tgtRatio + pairIndex * 12;
-      const y2 = tgtCoords.y;
-      const dy = y2 - y1;
-      const cp = Math.max(20, dy * 0.45);
+      let hasObstacle = false;
+      let maxObstacleRight = Math.max(srcCoords.x + srcCoords.w, tgtCoords.x + tgtCoords.w);
 
-      pathD = `M ${x1} ${y1} C ${x1} ${y1 + cp}, ${x2} ${y2 - cp}, ${x2} ${y2}`;
-      labelX = (x1 + x2) / 2 + (pairIndex > 0 ? 10 : 0);
-      labelY = (y1 + y2) / 2;
+      for (const [nodeId, node] of placedNodeCoords.entries()) {
+        if (nodeId === link.sourceNodeId || nodeId === link.targetNodeId) continue;
+        const vertBetween = node.y + 4 < maxY && node.y + node.h - 4 > minY;
+        if (!vertBetween) continue;
+
+        const corridorLeft = Math.min(srcCoords.x, tgtCoords.x) - 16;
+        const corridorRight = Math.max(srcCoords.x + srcCoords.w, tgtCoords.x + tgtCoords.w) + 16;
+        if (node.x + node.w > corridorLeft && node.x < corridorRight) {
+          hasObstacle = true;
+          maxObstacleRight = Math.max(maxObstacleRight, node.x + node.w);
+        }
+      }
+
+      if (hasObstacle) {
+        // Skip-layer cross-edge: route around intermediate obstacles on the outer right perimeter
+        const loopX = maxObstacleRight + 32 + pairIndex * 14;
+        const x1 = srcCoords.x + srcCoords.w;
+        const y1 = srcCoords.y + srcCoords.h * 0.5;
+        const x2 = tgtCoords.x + tgtCoords.w;
+        const y2 = tgtCoords.y + tgtCoords.h * 0.5;
+
+        pathD = `M ${x1} ${y1} C ${loopX} ${y1}, ${loopX} ${y2}, ${x2} ${y2}`;
+        labelX = loopX + 10;
+        labelY = (y1 + y2) / 2;
+        maxTotalW = Math.max(maxTotalW, loopX + 30);
+      } else {
+        // Normal downward / forward edge
+        const dx = tgtCoords.x - srcCoords.x;
+        const srcRatio = dx < -20 ? 0.35 : dx > 20 ? 0.65 : 0.5;
+        const tgtRatio = dx < -20 ? 0.68 : dx > 20 ? 0.32 : 0.5;
+
+        const x1 = srcCoords.x + srcCoords.w * srcRatio + pairIndex * 12;
+        const y1 = srcCoords.y + srcCoords.h;
+        const x2 = tgtCoords.x + tgtCoords.w * tgtRatio + pairIndex * 12;
+        const y2 = tgtCoords.y;
+        const dy = y2 - y1;
+        const cp = Math.max(20, dy * 0.45);
+
+        pathD = `M ${x1} ${y1} C ${x1} ${y1 + cp}, ${x2} ${y2 - cp}, ${x2} ${y2}`;
+        labelX = (x1 + x2) / 2 + (pairIndex > 0 ? 10 : 0);
+        labelY = (y1 + y2) / 2;
+      }
     } else if (isSameLayer) {
-      // Same layer horizontal connector
       const isForward = tgtCoords.x > srcCoords.x;
-      const x1 = isForward ? srcCoords.x + srcCoords.w : srcCoords.x;
-      const y1 = srcCoords.y + srcCoords.h * 0.5 + (pairIndex > 0 ? (isForward ? 8 : -8) : 0);
-      const x2 = isForward ? tgtCoords.x : tgtCoords.x + tgtCoords.w;
-      const y2 = tgtCoords.y + tgtCoords.h * 0.5 + (pairIndex > 0 ? (isForward ? 8 : -8) : 0);
-      const dx = Math.abs(x2 - x1);
-      const cp = Math.max(14, dx * 0.35);
-      const arch = isForward ? -12 : 12;
+      const leftLimit = Math.min(srcCoords.x + srcCoords.w, tgtCoords.x + tgtCoords.w);
+      const rightLimit = Math.max(srcCoords.x, tgtCoords.x);
 
-      pathD = `M ${x1} ${y1} C ${x1 + (isForward ? cp : -cp)} ${y1 + arch}, ${x2 - (isForward ? cp : -cp)} ${y2 + arch}, ${x2} ${y2}`;
-      labelX = (x1 + x2) / 2;
-      labelY = (y1 + y2) / 2 + (isForward ? -14 : 14);
+      // Find any intermediate nodes on this layer between source and target
+      const obstaclesOnLayer: { x: number; y: number; w: number; h: number }[] = [];
+      for (const [nodeId, node] of placedNodeCoords.entries()) {
+        if (nodeId === link.sourceNodeId || nodeId === link.targetNodeId) continue;
+        if (Math.abs(node.y - srcCoords.y) < 10) {
+          if (node.x + node.w > leftLimit && node.x < rightLimit) {
+            obstaclesOnLayer.push(node);
+          }
+        }
+      }
+
+      if (obstaclesOnLayer.length > 0) {
+        // Priority 1: Route around obstructing node(s) with clear minimum clearance
+        if (isForward) {
+          // Forward cross-edge (e.g. B -> D around C): route cleanly ABOVE the obstacle node(s)
+          const minObsY = Math.min(...obstaclesOnLayer.map((o) => o.y));
+          const clearanceGap = 26 + pairIndex * 14;
+          const yArch = minObsY - clearanceGap;
+
+          const x1 = srcCoords.x + srcCoords.w * 0.75;
+          const y1 = srcCoords.y;
+          const x2 = tgtCoords.x + tgtCoords.w * 0.25;
+          const y2 = tgtCoords.y;
+
+          pathD = `M ${x1} ${y1} C ${x1} ${yArch}, ${x2} ${yArch}, ${x2} ${y2}`;
+          labelX = (x1 + x2) / 2;
+          labelY = yArch - 8;
+        } else {
+          // Backward cross-edge (e.g. D -> B around C): route cleanly BELOW the obstacle node(s)
+          const maxObsBottom = Math.max(...obstaclesOnLayer.map((o) => o.y + o.h));
+          const hasSelfLoopBelow = links.some(
+            (l) =>
+              l.sourceNodeId === l.targetNodeId &&
+              obstaclesOnLayer.some((o) => {
+                const c = placedNodeCoords.get(l.sourceNodeId);
+                return c && c.x === o.x && c.y === o.y;
+              }),
+          );
+          const loopAllowance = hasSelfLoopBelow ? 38 : 0;
+          const clearanceGap = 26 + loopAllowance + pairIndex * 14;
+          const yArch = maxObsBottom + clearanceGap;
+
+          const x1 = srcCoords.x + srcCoords.w * 0.25;
+          const y1 = srcCoords.y + srcCoords.h;
+          const x2 = tgtCoords.x + tgtCoords.w * 0.75;
+          const y2 = tgtCoords.y + tgtCoords.h;
+
+          pathD = `M ${x1} ${y1} C ${x1} ${yArch}, ${x2} ${yArch}, ${x2} ${y2}`;
+          labelX = (x1 + x2) / 2;
+          labelY = yArch + 14;
+        }
+      } else {
+        // Adjacent nodes on same layer: short direct connector in the horizontal gap
+        const x1 = isForward ? srcCoords.x + srcCoords.w : srcCoords.x;
+        const y1 = srcCoords.y + srcCoords.h * 0.5 + (pairIndex > 0 ? (isForward ? 8 : -8) : 0);
+        const x2 = isForward ? tgtCoords.x : tgtCoords.x + tgtCoords.w;
+        const y2 = tgtCoords.y + tgtCoords.h * 0.5 + (pairIndex > 0 ? (isForward ? 8 : -8) : 0);
+        const dx = Math.abs(x2 - x1);
+        const cp = Math.max(14, dx * 0.35);
+        const arch = isForward ? -12 : 12;
+
+        pathD = `M ${x1} ${y1} C ${x1 + (isForward ? cp : -cp)} ${y1 + arch}, ${x2 - (isForward ? cp : -cp)} ${y2 + arch}, ${x2} ${y2}`;
+        labelX = (x1 + x2) / 2;
+        labelY = (y1 + y2) / 2 + (isForward ? -14 : 14);
+      }
     } else {
       // Upward edge (cycle back-edge): route smoothly around outer perimeter
       const isLeftOfTarget = srcCoords.x + srcCoords.w / 2 < tgtCoords.x + tgtCoords.w / 2;
+      const minY = Math.min(srcCoords.y, tgtCoords.y);
+      const maxY = Math.max(srcCoords.y + srcCoords.h, tgtCoords.y + tgtCoords.h);
 
       if (isLeftOfTarget) {
+        let minLeft = Math.min(srcCoords.x, tgtCoords.x);
+        for (const [id, node] of placedNodeCoords.entries()) {
+          if (id === link.sourceNodeId || id === link.targetNodeId) continue;
+          if (node.y + node.h > minY && node.y < maxY) {
+            if (node.x + node.w <= Math.max(srcCoords.x, tgtCoords.x) + 16) {
+              minLeft = Math.min(minLeft, node.x);
+            }
+          }
+        }
         const x1 = srcCoords.x;
         const y1 = srcCoords.y + srcCoords.h * 0.45 + pairIndex * 8;
         const x2 = tgtCoords.x;
         const y2 = tgtCoords.y + tgtCoords.h * 0.55 + pairIndex * 8;
 
-        const minXVal = Math.min(x1, x2);
-        const loopX = Math.max(12, minXVal - 26 - pairIndex * 14);
+        const loopX = Math.max(12, minLeft - 26 - pairIndex * 14);
         pathD = `M ${x1} ${y1} C ${loopX} ${y1}, ${loopX} ${y2}, ${x2} ${y2}`;
         labelX = loopX - 10;
         labelY = (y1 + y2) / 2;
       } else {
+        let maxRight = Math.max(srcCoords.x + srcCoords.w, tgtCoords.x + tgtCoords.w);
+        for (const [id, node] of placedNodeCoords.entries()) {
+          if (id === link.sourceNodeId || id === link.targetNodeId) continue;
+          if (node.y + node.h > minY && node.y < maxY) {
+            if (node.x >= Math.min(srcCoords.x, tgtCoords.x) - 16) {
+              maxRight = Math.max(maxRight, node.x + node.w);
+            }
+          }
+        }
         const x1 = srcCoords.x + srcCoords.w;
         const y1 = srcCoords.y + srcCoords.h * 0.45 + pairIndex * 8;
         const x2 = tgtCoords.x + tgtCoords.w;
         const y2 = tgtCoords.y + tgtCoords.h * 0.55 + pairIndex * 8;
 
-        const maxXVal = Math.max(x1, x2);
-        const loopX = maxXVal + 26 + pairIndex * 14;
+        const loopX = maxRight + 26 + pairIndex * 14;
         pathD = `M ${x1} ${y1} C ${loopX} ${y1}, ${loopX} ${y2}, ${x2} ${y2}`;
         maxTotalW = Math.max(maxTotalW, loopX + 30);
         labelX = loopX + 10;
