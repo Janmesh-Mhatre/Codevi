@@ -15,6 +15,7 @@ export const GRAPH_NODE_H = 56;
 export const GRAPH_H_GAP = 44;
 export const GRAPH_LEVEL_V_GAP = 64;
 export const GRAPH_COMPONENT_GAP = 60;
+export const GRAPH_HEADER_CLEARANCE = 64;
 
 export interface GraphLayoutResult {
   placedNodes: PlacedNode[];
@@ -96,7 +97,8 @@ export function layoutGraphStructures(
   const placedNodes: PlacedNode[] = [];
   const placedNodeCoords = new Map<string, { x: number; y: number; w: number; h: number }>();
 
-  let currY = startY;
+  // Provide initial header/badge clearance above layer 0
+  let currY = startY + GRAPH_HEADER_CLEARANCE;
   let maxTotalW = startX;
 
   // Helper to test if a directed path exists from `from` to `to` in `outNeighbors`
@@ -231,9 +233,14 @@ export function layoutGraphStructures(
       const y1 = srcCoords.y;
       const x2 = srcCoords.x + 24;
       const y2 = srcCoords.y;
-      const loopHeight = 36;
+      const maxLoopHeight = 36;
+      // Guarantee loop does not intrude into header/badge region (startY + 24)
+      const minAllowedApexY = startY + 24;
+      const loopHeight = Math.min(maxLoopHeight, Math.max(18, y1 - minAllowedApexY));
 
       const pathD = `M ${x1} ${y1} C ${x1 + 16} ${y1 - loopHeight}, ${x2 - 16} ${y2 - loopHeight}, ${x2} ${y2}`;
+      const labelX = (x1 + x2) / 2;
+      const labelY = y1 - loopHeight - 4;
 
       placedLinks.push({
         link,
@@ -241,6 +248,8 @@ export function layoutGraphStructures(
         markerId: getMarkerId(link.status),
         color: getStatusColor(link.status),
         dash: getStatusDash(link.status),
+        labelX,
+        labelY,
       });
       continue;
     }
@@ -257,6 +266,8 @@ export function layoutGraphStructures(
     const isSameLayer = tgtCoords.y === srcCoords.y;
 
     let pathD: string;
+    let labelX: number;
+    let labelY: number;
 
     if (isDownward) {
       // Normal downward / forward edge
@@ -272,6 +283,8 @@ export function layoutGraphStructures(
       const cp = Math.max(20, dy * 0.45);
 
       pathD = `M ${x1} ${y1} C ${x1} ${y1 + cp}, ${x2} ${y2 - cp}, ${x2} ${y2}`;
+      labelX = (x1 + x2) / 2 + (pairIndex > 0 ? 10 : 0);
+      labelY = (y1 + y2) / 2;
     } else if (isSameLayer) {
       // Same layer horizontal connector
       const isForward = tgtCoords.x > srcCoords.x;
@@ -284,6 +297,8 @@ export function layoutGraphStructures(
       const arch = isForward ? -12 : 12;
 
       pathD = `M ${x1} ${y1} C ${x1 + (isForward ? cp : -cp)} ${y1 + arch}, ${x2 - (isForward ? cp : -cp)} ${y2 + arch}, ${x2} ${y2}`;
+      labelX = (x1 + x2) / 2;
+      labelY = (y1 + y2) / 2 + (isForward ? -14 : 14);
     } else {
       // Upward edge (cycle back-edge): route smoothly around outer perimeter
       const isLeftOfTarget = srcCoords.x + srcCoords.w / 2 < tgtCoords.x + tgtCoords.w / 2;
@@ -297,6 +312,8 @@ export function layoutGraphStructures(
         const minXVal = Math.min(x1, x2);
         const loopX = Math.max(12, minXVal - 26 - pairIndex * 14);
         pathD = `M ${x1} ${y1} C ${loopX} ${y1}, ${loopX} ${y2}, ${x2} ${y2}`;
+        labelX = loopX - 10;
+        labelY = (y1 + y2) / 2;
       } else {
         const x1 = srcCoords.x + srcCoords.w;
         const y1 = srcCoords.y + srcCoords.h * 0.45 + pairIndex * 8;
@@ -307,6 +324,8 @@ export function layoutGraphStructures(
         const loopX = maxXVal + 26 + pairIndex * 14;
         pathD = `M ${x1} ${y1} C ${loopX} ${y1}, ${loopX} ${y2}, ${x2} ${y2}`;
         maxTotalW = Math.max(maxTotalW, loopX + 30);
+        labelX = loopX + 10;
+        labelY = (y1 + y2) / 2;
       }
     }
 
@@ -316,6 +335,8 @@ export function layoutGraphStructures(
       markerId: getMarkerId(link.status),
       color: getStatusColor(link.status),
       dash: getStatusDash(link.status),
+      labelX,
+      labelY,
     });
   }
 

@@ -177,6 +177,7 @@ export const StructureVisualizationPanel: React.FC = () => {
       for (const gl of graphLayout.placedLinks) {
         links.push({
           ...gl,
+          labelY: gl.labelY !== undefined ? gl.labelY + startY : undefined,
           pathD: gl.pathD.replace(/([0-9.]+)\s+([0-9.]+)/g, (_m, x, y) => `${x} ${parseFloat(y) + startY}`),
         });
       }

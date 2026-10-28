@@ -283,7 +283,7 @@ function detectPointerGraphs(
   }
 
   // Map of source block id -> target block ids
-  const outEdges = new Map<number, { targetId: number; rel: PointerRelationship }[]>();
+  const outEdges = new Map<number, { targetId: number; rel: PointerRelationship; slot: number }[]>();
   const inDegree = new Map<number, number>();
 
   for (const b of activeBlocks) {
@@ -299,9 +299,10 @@ function detectPointerGraphs(
     ) {
       const srcId = rel.pointerAddress.id;
       const tgtId = rel.targetAddress.id;
+      const slot = rel.pointerAddress.slot ?? 0;
 
       if (blockMap.has(srcId) && blockMap.has(tgtId)) {
-        outEdges.get(srcId)?.push({ targetId: tgtId, rel });
+        outEdges.get(srcId)?.push({ targetId: tgtId, rel, slot });
         inDegree.set(tgtId, (inDegree.get(tgtId) ?? 0) + 1);
       }
     }
@@ -318,7 +319,7 @@ function detectPointerGraphs(
     }
   }
 
-  // Deconstruct active blocks into weakly connected components
+  // Deconstruct active blocks into weakly connected components using visited set
   const visited = new Set<number>();
   const components: number[][] = [];
 
@@ -355,11 +356,16 @@ function detectPointerGraphs(
     }
   }
 
-  // Check each component or the whole network for GRAPH characteristics:
-  // 1. Cycle (including self loops)
-  // 2. Shared destination (in-degree >= 2)
-  // 3. Multi-branching beyond binary tree (out-degree >= 3)
-  // 4. Cross-edges / DAG structure
+  interface ValidComponent {
+    comp: number[];
+    hasCycle: boolean;
+    hasSelfLoop: boolean;
+    hasSharedTarget: boolean;
+    maxOutDegree: number;
+  }
+
+  const validGraphComponents: ValidComponent[] = [];
+
   for (const comp of components) {
     if (comp.length === 0) continue;
 
@@ -367,10 +373,12 @@ function detectPointerGraphs(
     let hasSelfLoop = false;
     let hasSharedTarget = false;
     let maxOutDegree = 0;
+    let totalCompEdges = 0;
 
     for (const id of comp) {
       const outList = outEdges.get(id) ?? [];
       maxOutDegree = Math.max(maxOutDegree, outList.length);
+      totalCompEdges += outList.length;
 
       const inDeg = inDegree.get(id) ?? 0;
       if (inDeg >= 2) {
@@ -385,7 +393,7 @@ function detectPointerGraphs(
       }
     }
 
-    // Detect general cycle in component using DFS color marking
+    // Detect general cycle in component using 3-color DFS
     if (!hasCycle) {
       const state = new Map<number, "unvisited" | "visiting" | "visited">();
       for (const id of comp) state.set(id, "unvisited");
@@ -411,9 +419,12 @@ function detectPointerGraphs(
       }
     }
 
+    // Discard isolated nodes without any edges unless it's a self-loop
+    if (totalCompEdges === 0) continue;
+
     // DISQUALIFICATION RULES:
-    // 1. If it's a binary tree: 0 cycles, at most 1 shared destination, out-degree <= 2,
-    //    and nodes have left/right structure.
+    // 1. Binary tree: 0 cycles, at most 1 shared destination, out-degree <= 2,
+    //    nodes have left/right structure (slots 1 & 2 pointers), and explicit root/tree var.
     const isCandidateTree =
       !hasCycle &&
       !hasSharedTarget &&
@@ -421,156 +432,142 @@ function detectPointerGraphs(
       comp.every((id) => {
         const b = blockMap.get(id);
         return b && b.slotCount >= 3 && b.values[1]?.kind === "pointer" && b.values[2]?.kind === "pointer";
+      }) &&
+      comp.some((id) => {
+        const vars = stackVarNames.get(id) ?? [];
+        return vars.some((v) => /root|tree/i.test(v));
       });
 
     if (isCandidateTree) continue;
 
-    // 2. If it's a simple linear linked list:
-    //    0 cycles, 0 shared targets, out-degree <= 1, in-degree <= 1
+    // 2. Linear linked list:
+    //    0 cycles, 0 shared targets, out-degree <= 1, in-degree <= 1,
+    //    has head pointer, and lacks discrete vertex variables for intermediate nodes.
+    const headVars = pv.stackVariables.filter((v) => /head|list|first/i.test(v.name));
+    const hasHeadPointer = headVars.length > 0;
+    const hasDiscreteVertexVars =
+      comp.length > 1 &&
+      comp.filter((id) => (stackVarNames.get(id)?.length ?? 0) > 0).length >= 2;
+
     const isLinearList =
       !hasCycle &&
       !hasSharedTarget &&
       maxOutDegree <= 1 &&
-      comp.every((id) => (inDegree.get(id) ?? 0) <= 1);
+      comp.every((id) => (inDegree.get(id) ?? 0) <= 1) &&
+      hasHeadPointer &&
+      !hasDiscreteVertexVars;
 
-    // 3. If it's a pure circular linked list:
+    // 3. Pure circular linked list:
     //    simple cycle with no branches (out-degree 1, in-degree 1)
-    //    and stack pointer is named head/list
-    const stackVars = step.pointerView?.stackVariables ?? [];
+    //    and stack pointer is named head/list without separate node variables
     const isPureCircularList =
       hasCycle &&
       !hasSelfLoop &&
       !hasSharedTarget &&
       maxOutDegree <= 1 &&
       comp.every((id) => (inDegree.get(id) ?? 0) === 1) &&
-      stackVars.length <= 2 &&
-      stackVars.some((v) => /head|list|first/i.test(v.name));
+      hasHeadPointer &&
+      !hasDiscreteVertexVars;
 
     if (isLinearList || isPureCircularList) continue;
 
-    // If it reaches here, it has genuine graph properties:
-    // (Cycle, shared target, cross-edge, self-loop, or multi-branching)
-    const isGraph = hasCycle || hasSharedTarget || hasSelfLoop || maxOutDegree >= 3;
-    if (!isGraph && comp.length < 2) continue;
+    validGraphComponents.push({
+      comp,
+      hasCycle,
+      hasSelfLoop,
+      hasSharedTarget,
+      maxOutDegree,
+    });
+  }
 
-    // Build GraphModel for this component
-    const nodes: GraphNode[] = [];
-    const edges: GraphEdge[] = [];
+  if (validGraphComponents.length === 0) return [];
+
+  // Assemble all valid graph components into a unified GraphModel
+  const allNodes: GraphNode[] = [];
+  const allEdges: GraphEdge[] = [];
+  const seenNodeIds = new Set<string>();
+  const seenEdgeIds = new Set<string>();
+  let overallHasCycles = false;
+  let overallHasSelfLoops = false;
+
+  for (const { comp, hasCycle, hasSelfLoop } of validGraphComponents) {
+    if (hasCycle) overallHasCycles = true;
+    if (hasSelfLoop) overallHasSelfLoops = true;
 
     for (const id of comp) {
       const block = blockMap.get(id)!;
       const addrStr = formatAddress(block.address);
-      const varNames = stackVarNames.get(id);
-      const displayLabel = varNames && varNames.length > 0 ? varNames[0] : addrStr;
+      const nodeId = `heap:${addrStr}`;
 
-      // Extract scalar data from slot 0
-      const val0 = block.values[0];
-      const dataVal = val0?.kind === "scalar" ? val0.value : undefined;
+      if (!seenNodeIds.has(nodeId)) {
+        seenNodeIds.add(nodeId);
+        const varNames = stackVarNames.get(id);
+        const displayLabel = varNames && varNames.length > 0 ? varNames[0] : addrStr;
 
-      nodes.push({
-        id: `heap:${addrStr}`,
-        label: displayLabel,
-        address: block.address,
-        value: dataVal,
-        type: `struct Node*`,
-        metadata: {
-          heapId: id,
-          addressStr: addrStr,
-          varNames,
-          slots: block.values,
-        },
-      });
+        const val0 = block.values[0];
+        const dataVal = val0?.kind === "scalar" ? val0.value : undefined;
 
+        allNodes.push({
+          id: nodeId,
+          label: displayLabel,
+          address: block.address,
+          value: dataVal,
+          type: "struct Node*",
+          metadata: {
+            heapId: id,
+            addressStr: addrStr,
+            varNames,
+            slots: block.values,
+          },
+        });
+      }
+
+      let edgeCounter = 0;
       for (const edge of outEdges.get(id) ?? []) {
         const tgtBlock = blockMap.get(edge.targetId);
         if (!tgtBlock) continue;
         const tgtAddrStr = formatAddress(tgtBlock.address);
+        const targetNodeId = `heap:${tgtAddrStr}`;
 
-        edges.push({
-          id: `edge_${addrStr}_to_${tgtAddrStr}_${edge.rel.fieldName ?? "next"}`,
-          source: `heap:${addrStr}`,
-          target: `heap:${tgtAddrStr}`,
+        const field = edge.rel.fieldName ?? `slot${edge.slot}`;
+        let edgeId = `edge_${addrStr}_s${edge.slot}_to_${tgtAddrStr}_${field}`;
+        if (seenEdgeIds.has(edgeId)) {
+          edgeId = `edge_${addrStr}_s${edge.slot}_to_${tgtAddrStr}_${field}_${++edgeCounter}`;
+        }
+        seenEdgeIds.add(edgeId);
+
+        allEdges.push({
+          id: edgeId,
+          source: nodeId,
+          target: targetNodeId,
           directed: true,
           label: edge.rel.fieldName ?? undefined,
-          metadata: { fieldName: edge.rel.fieldName },
+          metadata: { fieldName: edge.rel.fieldName, slot: edge.slot },
         });
       }
     }
-
-    if (nodes.length > 0) {
-      models.push({
-        id: `pointer_graph_comp_${comp[0]}`,
-        name: `Pointer Graph (${nodes.length} nodes)`,
-        nodes,
-        edges,
-        directed: true,
-        representation: "pointer-based",
-        metadata: {
-          representationBadge: "Representation: Pointer Graph",
-          hasCycles: hasCycle,
-          hasSelfLoops: hasSelfLoop,
-          componentCount: 1,
-        },
-      });
-    }
   }
 
-  // Handle case of multiple disconnected components where at least one is a graph
-  // If multiple components exist and none were classified individually as list/tree,
-  // group into a unified graph if overall structure represents disconnected graph components.
-  if (models.length === 0 && components.length >= 2 && activeBlocks.length >= 4) {
-    const totalEdges = activeBlocks.reduce(
-      (acc, b) => acc + (outEdges.get(b.address.id)?.length ?? 0),
-      0,
-    );
-    // If there are disconnected components with edges
-    if (totalEdges >= 2) {
-      const allNodes: GraphNode[] = [];
-      const allEdges: GraphEdge[] = [];
+  if (allNodes.length === 0) return [];
 
-      for (const b of activeBlocks) {
-        const addrStr = formatAddress(b.address);
-        const varNames = stackVarNames.get(b.address.id);
-        const displayLabel = varNames && varNames.length > 0 ? varNames[0] : addrStr;
-        const val0 = b.values[0];
-        const dataVal = val0?.kind === "scalar" ? val0.value : undefined;
-
-        allNodes.push({
-          id: `heap:${addrStr}`,
-          label: displayLabel,
-          address: b.address,
-          value: dataVal,
-          type: "struct Node*",
-          metadata: { heapId: b.address.id, addressStr: addrStr, varNames },
-        });
-
-        for (const edge of outEdges.get(b.address.id) ?? []) {
-          const tgtBlock = blockMap.get(edge.targetId);
-          if (!tgtBlock) continue;
-          allEdges.push({
-            id: `edge_${addrStr}_${formatAddress(tgtBlock.address)}`,
-            source: `heap:${addrStr}`,
-            target: `heap:${formatAddress(tgtBlock.address)}`,
-            directed: true,
-            label: edge.rel.fieldName,
-          });
-        }
-      }
-
-      models.push({
-        id: "pointer_graph_disconnected",
-        name: `Disconnected Graph (${allNodes.length} nodes, ${components.length} components)`,
-        nodes: allNodes,
-        edges: allEdges,
-        directed: true,
-        representation: "pointer-based",
-        metadata: {
-          representationBadge: "Representation: Pointer Graph",
-          componentCount: components.length,
-        },
-      });
-    }
-  }
+  const compCount = validGraphComponents.length;
+  models.push({
+    id: "pointer_graph",
+    name:
+      compCount > 1
+        ? `Disconnected Graph (${allNodes.length} nodes, ${compCount} components)`
+        : `Pointer Graph (${allNodes.length} nodes)`,
+    nodes: allNodes,
+    edges: allEdges,
+    directed: true,
+    representation: "pointer-based",
+    metadata: {
+      representationBadge: "Representation: Pointer Graph",
+      hasCycles: overallHasCycles,
+      hasSelfLoops: overallHasSelfLoops,
+      componentCount: compCount,
+    },
+  });
 
   return models;
 }

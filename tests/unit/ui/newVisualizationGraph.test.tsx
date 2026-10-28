@@ -602,4 +602,338 @@ describe("NewVisualizationPanel: Phase 6.5 V1 Graph Integration", () => {
     expect(html).toContain("H001");
     expect(html).not.toContain("Representation: Pointer Graph");
   });
+
+  // TEST 11 (P0-1): EDGE LABEL POSITIONING
+  it("TEST 11 (P0-1): renders edge labels derived from actual source/target layout and not at x=0, y=0", () => {
+    const matrixVal: ExecutionValue = {
+      kind: "array",
+      type: "int[3][3]",
+      length: 9,
+      dimensions: [3, 3],
+      values: [
+        { kind: "scalar", type: "int", value: 0 },
+        { kind: "scalar", type: "int", value: 5 }, // edge A -> B with weight 5
+        { kind: "scalar", type: "int", value: 0 },
+
+        { kind: "scalar", type: "int", value: 0 },
+        { kind: "scalar", type: "int", value: 0 },
+        { kind: "scalar", type: "int", value: 8 }, // edge B -> C with weight 8
+
+        { kind: "scalar", type: "int", value: 0 },
+        { kind: "scalar", type: "int", value: 0 },
+        { kind: "scalar", type: "int", value: 0 },
+      ],
+    };
+
+    const frame: StackFrame = {
+      functionName: "main",
+      callDepth: 1,
+      line: 5,
+      parameters: {},
+      locals: {
+        adj: matrixVal,
+      },
+      addresses: {
+        adj: { space: "stack", id: 1, slot: 0 },
+      },
+      isActive: true,
+    };
+
+    const step: ExecutionStep = {
+      line: 5,
+      column: 0,
+      endLine: 5,
+      endColumn: 20,
+      astNodeType: "declaration",
+      functionName: "main",
+      callDepth: 1,
+      description: "matrix graph",
+      variables: {},
+      callStack: [frame],
+      heap: [],
+      pointerView: {
+        relationships: [],
+        stackVariables: [
+          {
+            name: "adj",
+            address: { space: "stack", id: 1, slot: 0 },
+            value: matrixVal,
+            isArray: true,
+          },
+        ],
+        heapBlocks: [],
+      },
+    };
+
+    mockState = {
+      ...INITIAL_EXECUTION_STATE,
+      status: "paused",
+      currentStep: step,
+      history: [step],
+    };
+
+    const html = renderToStaticMarkup(<NewVisualizationPanel />);
+
+    // Edge weights '5' and '8' must be rendered as text labels
+    expect(html).toContain(">5<");
+    expect(html).toContain(">8<");
+
+    // Must NOT contain hardcoded x="0" y="0" text label coordinates
+    expect(html).not.toMatch(/<text[^>]*x="0"[^>]*y="0"[^>]*>5<\/text>/);
+    expect(html).not.toMatch(/<text[^>]*x="0"[^>]*y="0"[^>]*>8<\/text>/);
+  });
+
+  // TEST 12 (P0-2): HEAP + GRAPH SPATIAL COEXISTENCE
+  it("TEST 12 (P0-2): renders both Heap and Graph without spatial collision when program has both", async () => {
+    setSource(`
+      #include <stdlib.h>
+
+      int main() {
+          int *p = malloc(sizeof(int));
+          *p = 42;
+
+          int adj[3][3] = {
+              {0, 1, 0},
+              {0, 0, 1},
+              {1, 0, 0}
+          };
+
+          return 0;
+      }
+    `);
+
+    const engine = new ExecutionEngine();
+    engine.run();
+    const finalState = await waitFor(() => engine.getState(), (s) => s.status === "completed");
+    expect(finalState.errorMessage).toBeNull();
+    mockState = { ...finalState };
+
+    const html = renderToStaticMarkup(<NewVisualizationPanel />);
+
+    // 1. Both HEAP and GRAPH headers must be present
+    expect(html).toContain("HEAP");
+    expect(html).toContain("GRAPH");
+    expect(html).toContain("Representation: Adjacency Matrix");
+
+    // 2. Both heap blocks and matrix graph nodes are rendered
+    expect(html).toContain("H001");
+    expect(html).toContain("matrix-graph-node");
+    expect(html).toContain("Node A");
+    expect(html).toContain("Node B");
+    expect(html).toContain("Node C");
+  });
+
+  // TEST 13 (P0-3): MULTIPLE GRAPHS
+  it("TEST 13 (P0-3): renders multiple detected graph structures simultaneously without disappearing or overlapping", () => {
+    const graph1Val: ExecutionValue = {
+      kind: "array",
+      type: "int[3][3]",
+      length: 9,
+      dimensions: [3, 3],
+      values: [
+        { kind: "scalar", type: "int", value: 0 },
+        { kind: "scalar", type: "int", value: 1 },
+        { kind: "scalar", type: "int", value: 0 },
+        { kind: "scalar", type: "int", value: 0 },
+        { kind: "scalar", type: "int", value: 0 },
+        { kind: "scalar", type: "int", value: 1 },
+        { kind: "scalar", type: "int", value: 1 },
+        { kind: "scalar", type: "int", value: 0 },
+        { kind: "scalar", type: "int", value: 0 },
+      ],
+    };
+
+    const graph2Val: ExecutionValue = {
+      kind: "array",
+      type: "int[4][4]",
+      length: 16,
+      dimensions: [4, 4],
+      values: [
+        { kind: "scalar", type: "int", value: 0 },
+        { kind: "scalar", type: "int", value: 1 },
+        { kind: "scalar", type: "int", value: 0 },
+        { kind: "scalar", type: "int", value: 0 },
+
+        { kind: "scalar", type: "int", value: 0 },
+        { kind: "scalar", type: "int", value: 0 },
+        { kind: "scalar", type: "int", value: 1 },
+        { kind: "scalar", type: "int", value: 0 },
+
+        { kind: "scalar", type: "int", value: 0 },
+        { kind: "scalar", type: "int", value: 0 },
+        { kind: "scalar", type: "int", value: 0 },
+        { kind: "scalar", type: "int", value: 1 },
+
+        { kind: "scalar", type: "int", value: 1 },
+        { kind: "scalar", type: "int", value: 0 },
+        { kind: "scalar", type: "int", value: 0 },
+        { kind: "scalar", type: "int", value: 0 },
+      ],
+    };
+
+    const frame: StackFrame = {
+      functionName: "main",
+      callDepth: 1,
+      line: 10,
+      parameters: {},
+      locals: {
+        graph1: graph1Val,
+        graph2: graph2Val,
+      },
+      addresses: {
+        graph1: { space: "stack", id: 1, slot: 0 },
+        graph2: { space: "stack", id: 2, slot: 0 },
+      },
+      isActive: true,
+    };
+
+    const step: ExecutionStep = {
+      line: 10,
+      column: 0,
+      endLine: 10,
+      endColumn: 20,
+      astNodeType: "declaration",
+      functionName: "main",
+      callDepth: 1,
+      description: "two graphs",
+      variables: {},
+      callStack: [frame],
+      heap: [],
+      pointerView: {
+        relationships: [],
+        stackVariables: [
+          {
+            name: "graph1",
+            address: { space: "stack", id: 1, slot: 0 },
+            value: graph1Val,
+            isArray: true,
+          },
+          {
+            name: "graph2",
+            address: { space: "stack", id: 2, slot: 0 },
+            value: graph2Val,
+            isArray: true,
+          },
+        ],
+        heapBlocks: [],
+      },
+    };
+
+    mockState = {
+      ...INITIAL_EXECUTION_STATE,
+      status: "paused",
+      currentStep: step,
+      history: [step],
+    };
+
+    const html = renderToStaticMarkup(<NewVisualizationPanel />);
+
+    // Both graphs must be identified and rendered
+    expect(html).toContain("GRAPH: GRAPH1");
+    expect(html).toContain("GRAPH: GRAPH2");
+    expect(html).toContain("Representation: Adjacency Matrix");
+
+    // Graph 1 has 3 nodes (A, B, C); Graph 2 has 4 nodes (A, B, C, D)
+    expect(html).toContain("Node D");
+
+    // Both graph variables must be accounted for and neither should show in the normal array panel
+    expect(html).not.toContain("Arrays (1D &amp; 2D)");
+  });
+
+  // TEST 14 (P1): LAYER-0 SELF-LOOP / HEADER CLEARANCE
+  it("TEST 14 (P1): layer-0 self loop does not collide with Graph header or badge", () => {
+    const matrixWithSelfLoop: ExecutionValue = {
+      kind: "array",
+      type: "int[2][2]",
+      length: 4,
+      dimensions: [2, 2],
+      values: [
+        { kind: "scalar", type: "int", value: 1 }, // self-loop on node A (layer 0)
+        { kind: "scalar", type: "int", value: 1 }, // A -> B
+        { kind: "scalar", type: "int", value: 0 },
+        { kind: "scalar", type: "int", value: 0 },
+      ],
+    };
+
+    const frame: StackFrame = {
+      functionName: "main",
+      callDepth: 1,
+      line: 5,
+      parameters: {},
+      locals: {
+        graph: matrixWithSelfLoop,
+      },
+      addresses: {
+        graph: { space: "stack", id: 1, slot: 0 },
+      },
+      isActive: true,
+    };
+
+    const step: ExecutionStep = {
+      line: 5,
+      column: 0,
+      endLine: 5,
+      endColumn: 20,
+      astNodeType: "declaration",
+      functionName: "main",
+      callDepth: 1,
+      description: "self loop on layer 0",
+      variables: {},
+      callStack: [frame],
+      heap: [],
+      pointerView: {
+        relationships: [],
+        stackVariables: [
+          {
+            name: "graph",
+            address: { space: "stack", id: 1, slot: 0 },
+            value: matrixWithSelfLoop,
+            isArray: true,
+          },
+        ],
+        heapBlocks: [],
+      },
+    };
+
+    mockState = {
+      ...INITIAL_EXECUTION_STATE,
+      status: "paused",
+      currentStep: step,
+      history: [step],
+    };
+
+    const html = renderToStaticMarkup(<NewVisualizationPanel />);
+
+    expect(html).toContain("GRAPH");
+    expect(html).toContain("Representation: Adjacency Matrix");
+    expect(html).toContain("matrix-graph-node");
+    expect(html).toContain("Node A");
+    expect(html).toContain("Node B");
+  });
+
+  // TEST 15: ORDINARY MATRIX PRESERVATION
+  it("TEST 15: ordinary 2D matrix without graph naming does not get converted to a graph", async () => {
+    setSource(`
+      int main() {
+          int matrix[3][3] = {
+              {1, 2, 3},
+              {4, 5, 6},
+              {7, 8, 9}
+          };
+          return 0;
+      }
+    `);
+
+    const engine = new ExecutionEngine();
+    engine.run();
+    const finalState = await waitFor(() => engine.getState(), (s) => s.status === "completed");
+    expect(finalState.errorMessage).toBeNull();
+    mockState = { ...finalState };
+
+    const html = renderToStaticMarkup(<NewVisualizationPanel />);
+
+    // Must be rendered in Arrays panel, NOT as a Graph
+    expect(html).toContain("Arrays (1D &amp; 2D)");
+    expect(html).not.toContain("Representation: Adjacency Matrix");
+  });
 });

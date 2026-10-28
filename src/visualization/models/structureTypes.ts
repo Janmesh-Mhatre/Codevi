@@ -113,4 +113,6 @@ export interface PlacedLink {
   markerId: string;
   color: string;
   dash?: string;
+  labelX?: number;
+  labelY?: number;
 }

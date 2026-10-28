@@ -65,23 +65,40 @@ export const StructureCanvas: React.FC<StructureCanvasProps> = ({
         {/* Render Connection Links */}
         <g className="structure-links-layer">
           {placedLinks.map((pl, idx) => (
-            <path
-              key={pl.link.id || idx}
-              d={pl.pathD}
-              fill="none"
-              stroke={pl.color}
-              strokeWidth={1.5}
-              strokeDasharray={pl.dash}
-              markerEnd={`url(#${pl.markerId})`}
-              opacity={0.85}
-            >
-              <animate
-                attributeName="stroke-dashoffset"
-                values={pl.dash ? "20;0" : "0;0"}
-                dur="1.5s"
-                repeatCount="indefinite"
-              />
-            </path>
+            <g key={pl.link.id || idx}>
+              <path
+                d={pl.pathD}
+                fill="none"
+                stroke={pl.color}
+                strokeWidth={1.5}
+                strokeDasharray={pl.dash}
+                markerEnd={`url(#${pl.markerId})`}
+                opacity={0.85}
+              >
+                <animate
+                  attributeName="stroke-dashoffset"
+                  values={pl.dash ? "20;0" : "0;0"}
+                  dur="1.5s"
+                  repeatCount="indefinite"
+                />
+              </path>
+              {pl.link.label && pl.labelX !== undefined && pl.labelY !== undefined && (
+                <text
+                  x={pl.labelX}
+                  y={pl.labelY}
+                  fill="var(--color-fg-muted)"
+                  fontSize="9"
+                  fontFamily="var(--font-mono)"
+                  textAnchor="middle"
+                  paintOrder="stroke"
+                  stroke="var(--color-surface)"
+                  strokeWidth={3}
+                  strokeLinejoin="round"
+                >
+                  {pl.link.label}
+                </text>
+              )}
+            </g>
           ))}
         </g>
 

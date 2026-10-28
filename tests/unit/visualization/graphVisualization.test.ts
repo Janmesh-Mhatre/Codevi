@@ -790,7 +790,7 @@ describe("Phase 6.5 V1: Graph Visualization Foundation Unit Tests", () => {
         directed: true,
         representation: "pointer-based",
         nodes: [{ id: "A", label: "Node A", value: 1 }],
-        edges: [{ id: "e1", source: "A", target: "A", directed: true }],
+        edges: [{ id: "e1", source: "A", target: "A", directed: true, label: "loop" }],
       };
 
       const item = graphModelToStructureItem(model);
@@ -800,6 +800,89 @@ describe("Phase 6.5 V1: Graph Visualization Foundation Unit Tests", () => {
       expect(res.placedLinks).toHaveLength(1);
       expect(res.placedLinks[0].pathD).toContain("M ");
       expect(res.placedLinks[0].pathD).toContain("C ");
+      // Edge label coordinates must be deterministic and never 0,0
+      expect(res.placedLinks[0].labelX).toBeDefined();
+      expect(res.placedLinks[0].labelY).toBeDefined();
+      expect(res.placedLinks[0].labelX).toBeGreaterThan(0);
+      expect(res.placedLinks[0].labelY).toBeGreaterThan(0);
+
+      // P1: Layer-0 self-loop must stay clear of header area (at startY = 20)
+      const node = res.placedNodes[0];
+      expect(node.y).toBeGreaterThanOrEqual(20 + 50); // node placed with header clearance
+      expect(res.placedLinks[0].labelY).toBeGreaterThan(20); // label stays below startY
+    });
+
+    it("P0-1: computes deterministic edge label coordinates for downward, same-layer, cycle, and multi-edges", () => {
+      const model: GraphModel = {
+        id: "labeled_graph",
+        name: "Labeled Graph",
+        directed: true,
+        representation: "adjacency-matrix",
+        nodes: [
+          { id: "A", label: "Node A", value: 0 },
+          { id: "B", label: "Node B", value: 1 },
+          { id: "C", label: "Node C", value: 2 },
+        ],
+        edges: [
+          { id: "e1", source: "A", target: "B", directed: true, label: "downward" },
+          { id: "e2", source: "B", target: "C", directed: true, label: "same-layer" },
+          { id: "e3", source: "C", target: "A", directed: true, label: "back-edge" },
+        ],
+      };
+
+      const item = graphModelToStructureItem(model);
+      const res = layoutGraphStructures(item.nodes, item.links, 30, 40);
+
+      expect(res.placedLinks).toHaveLength(3);
+      for (const link of res.placedLinks) {
+        expect(link.labelX).toBeDefined();
+        expect(link.labelY).toBeDefined();
+        expect(link.labelX).not.toBe(0);
+        expect(link.labelY).not.toBe(0);
+      }
+
+      // Check determinism across multiple runs
+      const res2 = layoutGraphStructures(item.nodes, item.links, 30, 40);
+      for (let i = 0; i < res.placedLinks.length; i++) {
+        expect(res.placedLinks[i].labelX).toBe(res2.placedLinks[i].labelX);
+        expect(res.placedLinks[i].labelY).toBe(res2.placedLinks[i].labelY);
+      }
+    });
+
+    it("P0-1 & P1: supports disconnected graph components without overlapping", () => {
+      const model: GraphModel = {
+        id: "disconnected_graph",
+        name: "Disconnected Graph",
+        directed: true,
+        representation: "adjacency-matrix",
+        nodes: [
+          { id: "A", label: "Node A", value: 0 },
+          { id: "B", label: "Node B", value: 1 },
+          { id: "C", label: "Node C", value: 2 },
+          { id: "D", label: "Node D", value: 3 },
+        ],
+        edges: [
+          { id: "e1", source: "A", target: "B", directed: true, label: "comp1" },
+          { id: "e2", source: "C", target: "D", directed: true, label: "comp2" },
+        ],
+      };
+
+      const item = graphModelToStructureItem(model);
+      const res = layoutGraphStructures(item.nodes, item.links, 20, 20);
+
+      expect(res.placedNodes).toHaveLength(4);
+      expect(res.placedLinks).toHaveLength(2);
+
+      // Verify no pair of nodes collides
+      for (let i = 0; i < res.placedNodes.length; i++) {
+        for (let j = i + 1; j < res.placedNodes.length; j++) {
+          const n1 = res.placedNodes[i];
+          const n2 = res.placedNodes[j];
+          const overlapsX = n1.x < n2.x + n2.w && n1.x + n1.w > n2.x;
+          const overlapsY = n1.y < n2.y + n2.h && n1.y + n1.h > n2.y;
+          expect(overlapsX && overlapsY).toBe(false);
+        }
+      }
     });
   });
 });

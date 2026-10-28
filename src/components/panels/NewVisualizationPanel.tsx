@@ -199,27 +199,23 @@ export function NewVisualizationPanel() {
     return detectGraphModels(currentStep);
   }, [currentStep]);
 
-  const matrixOrListGraph = useMemo(() => {
-    return (
-      graphModels.find(
-        (m) =>
-          m.representation === "adjacency-matrix" ||
-          m.representation === "adjacency-list",
-      ) ?? null
+  const matrixOrListGraphs = useMemo(() => {
+    return graphModels.filter(
+      (m) =>
+        m.representation === "adjacency-matrix" ||
+        m.representation === "adjacency-list",
     );
   }, [graphModels]);
 
   const graphVarNames = useMemo(() => {
     const set = new Set<string>();
-    for (const m of graphModels) {
-      if (m.representation === "adjacency-matrix" || m.representation === "adjacency-list") {
-        if (m.metadata?.variableName && typeof m.metadata.variableName === "string") {
-          set.add(m.metadata.variableName);
-        }
+    for (const m of matrixOrListGraphs) {
+      if (m.metadata?.variableName && typeof m.metadata.variableName === "string") {
+        set.add(m.metadata.variableName);
       }
     }
     return set;
-  }, [graphModels]);
+  }, [matrixOrListGraphs]);
 
   // --- DATA STRUCTURE DETECTION (Array, Stack DS, Queue DS) ---
   const { arrays, stacks, queues } = useMemo(() => {
@@ -445,8 +441,8 @@ export function NewVisualizationPanel() {
 
   const hasStack = stackVariables.length > 0;
   const hasHeap = heapBlocks.length > 0;
-  const hasMatrixOrListGraph = matrixOrListGraph !== null;
-  const hasMemory = hasStack || hasHeap || hasMatrixOrListGraph;
+  const hasMatrixOrListGraphs = matrixOrListGraphs.length > 0;
+  const hasMemory = hasStack || hasHeap || hasMatrixOrListGraphs;
 
   if (!currentStep || status === "idle") {
     return (
@@ -473,7 +469,7 @@ export function NewVisualizationPanel() {
   }
 
   // --- MEMORY LAYOUT COMPUTATION ---
-  const stackNodeW = (hasHeap || hasMatrixOrListGraph) ? NODE_W : EXPANDED_NODE_W;
+  const stackNodeW = (hasHeap || hasMatrixOrListGraphs) ? NODE_W : EXPANDED_NODE_W;
   const stackX = PAD;
 
   const stackNodes: { x: number; y: number; w: number; h: number; v: PointerViewVariable }[] = [];
@@ -507,15 +503,7 @@ export function NewVisualizationPanel() {
     treeLayout.treeBlockIds,
   );
   const isPointerGraph = !isTree && graphLayout.detectedGraph !== null;
-  const isGraph = !isTree && (isPointerGraph || hasMatrixOrListGraph);
-
-  const matrixOrListLayout =
-    hasMatrixOrListGraph && matrixOrListGraph
-      ? (() => {
-          const item = graphModelToStructureItem(matrixOrListGraph);
-          return layoutGraphStructures(item.nodes, item.links, heapX, TOP_PAD + 26);
-        })()
-      : null;
+  const isGraph = !isTree && (isPointerGraph || hasMatrixOrListGraphs);
 
   const heapNodes: { x: number; y: number; w: number; h: number; b: HeapBlock }[] = [];
   let heapY = TOP_PAD + 26;
@@ -600,9 +588,53 @@ export function NewVisualizationPanel() {
     }
   }
 
+  const heapEndY = hasHeap ? heapY : TOP_PAD + 26;
+
+  // Lay out each matrix or list graph deterministically below Heap and preceding graphs
+  let currentGraphY = hasHeap ? heapEndY + 40 : TOP_PAD + 26;
+  const placedMatrixOrListGraphs = matrixOrListGraphs.map((model) => {
+    const item = graphModelToStructureItem(model);
+    const headerY = currentGraphY;
+    const badgeY = currentGraphY + 14;
+    const layout = layoutGraphStructures(item.nodes, item.links, heapX, currentGraphY);
+
+    const firstNode = layout.placedNodes[0];
+    const centerX = firstNode
+      ? Math.round(firstNode.x + firstNode.w / 2)
+      : Math.round(heapX + HEAP_NODE_W / 2);
+
+    const maxY = layout.placedNodes.length > 0
+      ? Math.max(...layout.placedNodes.map((n) => n.y + n.h))
+      : currentGraphY + 60;
+    const endY = Math.max(maxY, layout.height);
+
+    const placedItem = {
+      model,
+      headerY,
+      badgeY,
+      centerX,
+      layout,
+      startY: currentGraphY,
+      endY,
+    };
+
+    currentGraphY = endY + 40;
+    return placedItem;
+  });
+
+  const lastGraphEndY = placedMatrixOrListGraphs.length > 0
+    ? placedMatrixOrListGraphs[placedMatrixOrListGraphs.length - 1].endY
+    : 0;
+
   const graphMaxX = isPointerGraph ? graphLayout.maxX : 0;
-  const matrixMaxX = matrixOrListLayout ? heapX + matrixOrListLayout.width : heapX;
-  const matrixMaxY = matrixOrListLayout ? TOP_PAD + 26 + matrixOrListLayout.height : 0;
+  const matrixMaxX = placedMatrixOrListGraphs.length > 0
+    ? Math.max(
+        ...placedMatrixOrListGraphs.map((g) =>
+          Math.max(heapX + g.layout.width, ...g.layout.placedNodes.map((n) => n.x + n.w)),
+        ),
+      )
+    : heapX;
+  const matrixMaxY = lastGraphEndY;
 
   const heapMaxX = heapNodes.length > 0
     ? Math.max(...heapNodes.map((n) => n.x + n.w))
@@ -611,7 +643,7 @@ export function NewVisualizationPanel() {
   const firstTree = treeLayout.detectedTrees[0];
   const treeRootPos = firstTree ? firstTree.placedNodes.get(firstTree.rootId) : undefined;
   const firstGraphNode = graphLayout.allPlacedGraphNodes[0];
-  const firstMatrixNode = matrixOrListLayout?.placedNodes[0];
+  const firstMatrixNode = placedMatrixOrListGraphs[0]?.layout.placedNodes[0];
 
   const heapCenterX = treeRootPos
     ? Math.round(treeRootPos.x + HEAP_NODE_W / 2)
@@ -643,15 +675,21 @@ export function NewVisualizationPanel() {
     return true;
   });
 
-  const nullNodeX = (hasHeap || hasMatrixOrListGraph) && hasStack
+  const nullNodeX = (hasHeap || hasMatrixOrListGraphs) && hasStack
     ? PAD + stackNodeW + COL_GAP / 2 - NULL_NODE_W / 2
     : PAD + stackNodeW / 2 - NULL_NODE_W / 2;
-  const nullNodeY = Math.max(stackY, hasHeap ? heapY : 0, matrixMaxY) + 8;
+  const nullNodeY = Math.max(stackY, hasHeap ? heapEndY : 0, matrixMaxY) + 8;
 
-  const svgW = (hasHeap || hasMatrixOrListGraph)
+  const svgW = (hasHeap || hasMatrixOrListGraphs)
     ? Math.max(heapMaxX + 160, treeLayout.maxX + 160, graphMaxX + 160, matrixMaxX + 160)
     : Math.max(stackNodeW + PAD * 2 + 60, 360);
-  const svgH = Math.max(stackY, hasHeap ? heapY : 0, matrixMaxY, graphLayout.maxY, hasCentralNull ? nullNodeY + NULL_NODE_H + PAD : 0) + PAD + 30;
+  const svgH = Math.max(
+    stackY,
+    hasHeap ? heapEndY : 0,
+    matrixMaxY,
+    graphLayout.maxY,
+    hasCentralNull ? nullNodeY + NULL_NODE_H + PAD : 0,
+  ) + PAD + 30;
 
   // Arrow computation
   type Arrow = {
@@ -926,7 +964,7 @@ export function NewVisualizationPanel() {
                   <span>Stack (Memory)</span>
                 </div>
               )}
-              {(hasHeap || hasMatrixOrListGraph) && (
+              {(hasHeap || hasMatrixOrListGraphs) && (
                 <div
                   style={{ marginLeft: hasStack ? `${COL_GAP - 16}px` : "0px" }}
                   className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-widest text-active"
@@ -991,7 +1029,7 @@ export function NewVisualizationPanel() {
                 </text>
               )}
 
-              {(hasHeap || hasMatrixOrListGraph) && (
+              {hasHeap && (
                 <g>
                   <text
                     x={heapCenterX}
@@ -1002,9 +1040,9 @@ export function NewVisualizationPanel() {
                     letterSpacing="0.08em"
                     textAnchor="middle"
                   >
-                    {isTree ? "TREE" : isGraph ? "GRAPH" : "HEAP"}
+                    {isTree ? "TREE" : isPointerGraph ? "GRAPH" : "HEAP"}
                   </text>
-                  {isGraph && (
+                  {isPointerGraph && (
                     <text
                       x={heapCenterX}
                       y={TOP_PAD + 14}
@@ -1015,12 +1053,43 @@ export function NewVisualizationPanel() {
                       textAnchor="middle"
                     >
                       {graphLayout.detectedGraph?.representationBadge ??
-                        matrixOrListGraph?.metadata?.representationBadge ??
-                        "Representation: Graph"}
+                        "Representation: Pointer Graph"}
                     </text>
                   )}
                 </g>
               )}
+
+              {placedMatrixOrListGraphs.map((g) => (
+                <g key={`graph-heading-${g.model.id}`}>
+                  <text
+                    x={g.centerX}
+                    y={g.headerY}
+                    fill="var(--color-active)"
+                    fontSize="11"
+                    fontWeight="600"
+                    letterSpacing="0.08em"
+                    textAnchor="middle"
+                  >
+                    {hasHeap || placedMatrixOrListGraphs.length > 1
+                      ? (g.model.metadata?.variableName
+                          ? `GRAPH: ${g.model.metadata.variableName}`
+                          : g.model.name
+                        ).toUpperCase()
+                      : "GRAPH"}
+                  </text>
+                  <text
+                    x={g.centerX}
+                    y={g.badgeY}
+                    fill="var(--color-active)"
+                    fontSize="9"
+                    fontWeight="500"
+                    fontFamily="var(--font-mono)"
+                    textAnchor="middle"
+                  >
+                    {g.model.metadata?.representationBadge ?? "Representation: Graph"}
+                  </text>
+                </g>
+              ))}
 
               {/* Central NULL node */}
               {hasCentralNull && (
@@ -1111,10 +1180,10 @@ export function NewVisualizationPanel() {
               )}
 
               {/* Adjacency Matrix / List Graph Connectors */}
-              {matrixOrListLayout && (
-                <g key="matrix-graph-connectors" className="graph-connectors">
-                  {matrixOrListLayout.placedLinks.map((pl, idx) => (
-                    <g key={`matrix-link-${idx}`} className="graph-connector-edge">
+              {placedMatrixOrListGraphs.map((g) => (
+                <g key={`matrix-graph-connectors-${g.model.id}`} className="graph-connectors">
+                  {g.layout.placedLinks.map((pl, idx) => (
+                    <g key={`matrix-link-${g.model.id}-${idx}`} className="graph-connector-edge">
                       <path
                         d={pl.pathD}
                         className="graph-edge graph-edge-directed"
@@ -1127,12 +1196,16 @@ export function NewVisualizationPanel() {
                       />
                       {pl.link.label && (
                         <text
-                          x={0}
-                          y={0}
+                          x={pl.labelX ?? 0}
+                          y={pl.labelY ?? 0}
                           fill="var(--color-fg-muted)"
                           fontSize="9"
                           fontFamily="var(--font-mono)"
                           textAnchor="middle"
+                          paintOrder="stroke"
+                          stroke="var(--color-surface)"
+                          strokeWidth={3}
+                          strokeLinejoin="round"
                         >
                           {pl.link.label}
                         </text>
@@ -1140,7 +1213,7 @@ export function NewVisualizationPanel() {
                     </g>
                   ))}
                 </g>
-              )}
+              ))}
 
               {/* Connectors / Arrows */}
               {arrows.map((a, i) => {
@@ -1644,91 +1717,93 @@ export function NewVisualizationPanel() {
               })}
 
               {/* Adjacency Matrix / List Graph Nodes */}
-              {matrixOrListLayout && matrixOrListLayout.placedNodes.map(({ x, y, w, h, node }) => {
-                const valObj = node.slots[0]?.value;
-                const valStr = valObj ? formatExecutionValue(valObj) : "0";
-                return (
-                  <g key={node.id} className="matrix-graph-node">
-                    <rect
-                      x={x}
-                      y={y}
-                      width={w}
-                      height={h}
-                      rx={6}
-                      fill="color-mix(in srgb, var(--color-active) 8%, var(--color-surface-raised))"
-                      stroke="var(--color-active)"
-                      strokeWidth={1}
-                      opacity={0.95}
-                    />
-                    <g
-                      transform={`translate(${x + 8}, ${y + 5}) scale(0.65)`}
-                      stroke="var(--color-active)"
-                      strokeWidth={1.8}
-                      fill="none"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    >
-                      <rect x="16" y="16" width="6" height="6" rx="1" />
-                      <rect x="2" y="16" width="6" height="6" rx="1" />
-                      <rect x="9" y="2" width="6" height="6" rx="1" />
-                      <path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3" />
-                      <path d="M12 12V8" />
-                    </g>
-                    <text
-                      x={x + 24}
-                      y={y + 15}
-                      fill="var(--color-active)"
-                      fontSize="12"
-                      fontWeight="600"
-                      fontFamily="var(--font-mono)"
-                    >
-                      {node.label}
-                    </text>
-                    <g className="graph-node-badge">
+              {placedMatrixOrListGraphs.map((g) =>
+                g.layout.placedNodes.map(({ x, y, w, h, node }) => {
+                  const valObj = node.slots[0]?.value;
+                  const valStr = valObj ? formatExecutionValue(valObj) : "0";
+                  return (
+                    <g key={`${g.model.id}-${node.id}`} className="matrix-graph-node">
                       <rect
-                        x={x + w - 46}
-                        y={y + 5}
-                        width={40}
-                        height={14}
-                        rx={3}
-                        fill="color-mix(in srgb, var(--color-active) 15%, transparent)"
+                        x={x}
+                        y={y}
+                        width={w}
+                        height={h}
+                        rx={6}
+                        fill="color-mix(in srgb, var(--color-active) 8%, var(--color-surface-raised))"
                         stroke="var(--color-active)"
-                        strokeWidth={0.8}
+                        strokeWidth={1}
+                        opacity={0.95}
                       />
+                      <g
+                        transform={`translate(${x + 8}, ${y + 5}) scale(0.65)`}
+                        stroke="var(--color-active)"
+                        strokeWidth={1.8}
+                        fill="none"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <rect x="16" y="16" width="6" height="6" rx="1" />
+                        <rect x="2" y="16" width="6" height="6" rx="1" />
+                        <rect x="9" y="2" width="6" height="6" rx="1" />
+                        <path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3" />
+                        <path d="M12 12V8" />
+                      </g>
                       <text
-                        x={x + w - 26}
+                        x={x + 24}
                         y={y + 15}
                         fill="var(--color-active)"
-                        fontSize="8.5"
+                        fontSize="12"
                         fontWeight="600"
                         fontFamily="var(--font-mono)"
-                        textAnchor="middle"
                       >
-                        {node.id.replace("v_", "V")}
+                        {node.label}
+                      </text>
+                      <g className="graph-node-badge">
+                        <rect
+                          x={x + w - 46}
+                          y={y + 5}
+                          width={40}
+                          height={14}
+                          rx={3}
+                          fill="color-mix(in srgb, var(--color-active) 15%, transparent)"
+                          stroke="var(--color-active)"
+                          strokeWidth={0.8}
+                        />
+                        <text
+                          x={x + w - 26}
+                          y={y + 15}
+                          fill="var(--color-active)"
+                          fontSize="8.5"
+                          fontWeight="600"
+                          fontFamily="var(--font-mono)"
+                          textAnchor="middle"
+                        >
+                          {node.id.replace("v_", "V")}
+                        </text>
+                      </g>
+                      <text
+                        x={x + 8}
+                        y={y + 32}
+                        fill="var(--color-fg-muted)"
+                        fontSize="10"
+                        fontFamily="var(--font-mono)"
+                      >
+                        value: <tspan fill="var(--color-fg)" fontWeight="600">{valStr}</tspan>
+                      </text>
+                      <text
+                        x={x + 8}
+                        y={y + 46}
+                        fill="var(--color-fg-muted)"
+                        fontSize="9"
+                        opacity={0.8}
+                        fontFamily="var(--font-mono)"
+                      >
+                        @{node.id.replace("v_", "V00")}
                       </text>
                     </g>
-                    <text
-                      x={x + 8}
-                      y={y + 32}
-                      fill="var(--color-fg-muted)"
-                      fontSize="10"
-                      fontFamily="var(--font-mono)"
-                    >
-                      value: <tspan fill="var(--color-fg)" fontWeight="600">{valStr}</tspan>
-                    </text>
-                    <text
-                      x={x + 8}
-                      y={y + 46}
-                      fill="var(--color-fg-muted)"
-                      fontSize="9"
-                      opacity={0.8}
-                      fontFamily="var(--font-mono)"
-                    >
-                      @{node.id.replace("v_", "V00")}
-                    </text>
-                  </g>
-                );
-              })}
+                  );
+                }),
+              )}
             </svg>
           </div>
         )}
