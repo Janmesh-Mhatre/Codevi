@@ -15,7 +15,8 @@ Codevi enables students and programmers to see how C code actually executes: ste
 - **Memory Safety Diagnostics:** Runtime detection of use-after-free, double-free, invalid frees, null-pointer dereferences, and allocation leaks.
 - **Interactive SVG Pointer View:** Live visual graph displaying stack variables, heap blocks, NULL sentinel, and directional animated connectors with collision-free bezier routing.
 - **Dedicated Variable & Array View:** Tabular scalar view, 1D array boxes, 2D matrix grids with cell-level read/write highlighting, active index variable badges (`i ▾`), and boundary cues.
-- **Data Structure Detection:** Automatic recognition of singly linked lists, circular linked lists, array-backed Stacks (`top` variable), and array-backed Queues (`front`/`rear` or `head`/`tail`).
+- **Data Structure Detection:** Automatic recognition of singly linked lists, circular linked lists, array-backed Stacks (`top` variable), array-backed Queues (`front`/`rear` or `head`/`tail`), binary trees / binary search trees (BSTs), pointer-based graphs, and adjacency matrix graphs.
+- **Tree & Graph Visualization:** Interactive hierarchical layout for binary trees with depth/balance metrics, and layered collision-free graph layout supporting cycles, outer perimeter back-edges, self-loops, and dense adjacency matrices with targeted edge-node clearance routing.
 - **Interactive Standard I/O:** Emulated `printf` (with `%d`, `%i`, `%c`, `%s`, `%f`, `%p`, `%ld`), `puts`, `putchar`, and interactive execution-pausing `scanf` and `getchar`.
 - **9-Theme Design System:** Curated palette (Dark Modern, Light Modern, One Dark Pro, GitHub Dark, Tokyo Night, Catppuccin Mocha, Dracula, Nord, Ayu Mirage) with `localStorage` persistence and dynamic Monaco Editor synchronization.
 
@@ -52,24 +53,21 @@ For a comprehensive technical breakdown of every layer, see [`docs/PROJECT_ANALY
 
 Codevi offers multiple specialized visualization panels:
 
-1. **Pointer View (`PointerViewPanel`):**
-   - Bipartite layout: Stack variables on the left, Heap allocations on the right, centered `NULL` terminal card.
-   - Outward tiered stack-to-stack connector routing preventing card overlap.
-   - Stack-to-heap smooth bezier routing.
-   - Heap-to-heap adjacent, reverse, and circular closing connectors.
-   - Heap block ordering based on actual linked list `next` traversal order.
-   - Interactive sidebar displaying address, target, region, status, and pointer chain depth.
-2. **Variable & Array View (`VariableArrayViewPanel`):**
-   - Scalar variable table with simulated address badges (`@S001`).
-   - 1D array slot cards showing elements, indices, and active pointer/index cues (`i ▾`, `p ➔`).
-   - 2D array grid matrices with coordinate labels (`[r][c]`) and read/write highlighting.
-   - Array-backed Stack ADT visualization with `Top` position indicators.
-   - Array-backed Queue ADT visualization with `Front` and `Rear` indicators.
-3. **Stack Frames Panel (`StackPanel`):**
+1. **Unified Visualization Panel (`NewVisualizationPanel`):**
+   - **Pointer & Memory View:** Bipartite layout with Stack variables on the left, Heap allocations on the right, centered `NULL` terminal card, tiered stack-to-stack connector routing, and linked-list traversal ordering.
+   - **Array & Matrix View:** 1D array slot cards showing elements, indices, and active pointer/index cues (`i ▾`, `p ➔`); 2D matrix grids with coordinate labels (`[r][c]`) and read/write highlighting.
+   - **Stack & Queue ADT View:** Dedicated indicators for `Top` (stacks) and `Front` / `Rear` (queues).
+   - **Binary Tree & BST View (Phase 6.4):** Deterministic Reingold-Tilford hierarchical layout for binary trees and BSTs with left/right child branch routing and computed depth/balance metrics.
+   - **Graph View (Phase 6.5 - 6.5.3):** Unified GraphModel visualization supporting pointer-based graphs and 2D adjacency matrices with cycle back-edge routing, self-loops, disconnected component separation, and targeted obstacle-avoidance clearance.
+2. **Pointer View (`PointerViewPanel`):**
+   - Detailed inspection sidebar displaying address, target, region, status, and pointer chain depth.
+3. **Variable & Array View (`VariableArrayViewPanel`):**
+   - Direct inspection of scalar variables, arrays, and ADTs with simulated address badges (`@S001`).
+4. **Stack Frames Panel (`StackPanel`):**
    - Active call stack frames displaying function name, call depth, line number, parameters, and locals.
-4. **Memory Grid Panel (`MemoryPanel`):**
+5. **Memory Grid Panel (`MemoryPanel`):**
    - Uniform view of all stack cells and heap blocks with pointer resolution chains (`pp → p → x`).
-5. **AST Viewer (`AstViewerPanel`):**
+6. **AST Viewer (`AstViewerPanel`):**
    - Expandable syntax tree viewer with node counts and parse time metrics.
 
 ---
@@ -81,7 +79,13 @@ Codevi offers multiple specialized visualization panels:
 - **Variables & Scope:** Local variables, global variables, block scoping `{ ... }`, multi-variable declarations.
 - **Arrays:** 1D and 2D stack arrays, partial initialization, subscripting (`arr[i]`, `matrix[r][c]`), array decay to pointer, element address-of (`&arr[i]`), dynamic heap arrays (`malloc(n * sizeof(int))`).
 - **Pointers:** Address-of (`&`), dereferencing read/write (`*p`, `*p = val`), pointer-to-pointer (`**pp`), pointer arithmetic (`+`, `-`, `++`, `--`, `+=`, `-=`), pointer subtraction (`q - p`), pointer comparisons (`<`, `<=`, `>`, `>=`, `==`, `!=`).
-- **Structs:** Definitions (`struct Node { int data; struct Node *next; };`), stack struct variables (`struct Node n;`), heap struct allocations (`malloc(sizeof(struct Node))`), direct access (`n.data`), arrow dereference (`p->next`), self-referential linked list structs.
+- **Structs:** Definitions (`struct Node { int data; struct Node *next; };`), stack struct variables (`struct Node n;`), heap struct allocations (`malloc(sizeof(struct Node))`), direct access (`n.data`), arrow dereference (`p->next`), self-referential linked list, tree, and graph structs.
+- **Data Structures:**
+  - Singly linked lists and circular linked lists (cycle detection).
+  - Array-backed Stacks (`top`) and Queues (`front`/`rear`).
+  - Binary trees and Binary Search Trees (BSTs) with `left` and `right` child pointers.
+  - Pointer-based graphs (multi-target nodes, shared destinations with $in\text{-}degree \ge 2$, cross-edges, cycles, self-loops).
+  - Adjacency matrix graphs (square 2D arrays with binary or weighted edges and obstacle-avoidance routing).
 - **Dynamic Memory:** `malloc`, `calloc`, `realloc`, `free` (including safe `free(NULL)`), use-after-free and double-free error detection, allocation leak reporting.
 - **Standard I/O:** `printf` (`%d`, `%i`, `%c`, `%s`, `%f`, `%p`, `%ld`), `scanf` (interactive input prompt), `puts`, `putchar`, `getchar`.
 - **Control Flow:** `if` / `else`, `while`, `do { ... } while (...)`, `for`, `switch` / `case` / `default` (with fallthrough and duplicate case validation), `break`, `continue`, `return`.
@@ -92,7 +96,7 @@ Codevi offers multiple specialized visualization panels:
 - **Bit-Level / Overflow Semantics:** All numbers are backed by JavaScript IEEE 754 floats; integer overflow wrap-around is not simulated.
 - **Unions, Enums, Typedefs:** `union`, `enum`, and `typedef` are not supported.
 - **Function Pointers & Goto:** Function pointers and `goto` labels are not supported.
-- **Data Structure Limitations:** Stacks and Queues are supported via array backing only (linked-list-backed ADT detection is unsupported); Trees and Graphs are planned.
+- **Data Structure Limitations:** Stacks and Queues are supported via array backing only (linked-list-backed ADT detection is unsupported); Graph adjacency lists are planned for Phase 7.
 
 For the complete status of all features, consult [`docs/FEATURE_STATUS.md`](file:///c:/Users/Janmesh%20Mhatre/Desktop/Programmes/Projects/Codevi/docs/FEATURE_STATUS.md).
 
@@ -128,7 +132,7 @@ codevi/
 │   ├── themes/                      # 9-theme design system and Monaco synchronizer
 │   └── visualization/               # Structure detector, connectors, layouts, diff engine
 ├── tests/                           # Unit and integration test suite
-│   └── unit/                        # 31 test files, 365 tests (100% passing)
+│   └── unit/                        # 45 test files, 500 tests (100% passing)
 ├── vitest.config.ts                 # Vitest test configuration
 ├── vite.config.ts                   # Vite bundler configuration
 └── package.json                     # Dependencies & scripts
@@ -169,7 +173,7 @@ Run the automated test suite with Vitest:
 npm test
 ```
 
-**Test Suite Status:** **31 test files, 365 tests passing cleanly (0 failures)**.
+**Test Suite Status:** **45 test files, 500 tests passing cleanly (0 failures, 100% pass rate)**.
 
 Tests run with `fileParallelism: false` in `vitest.config.ts` to ensure deterministic execution of WebAssembly memory across test cycles.
 
@@ -209,5 +213,5 @@ Codevi is built as a static client-side web application. It can be hosted on any
 
 ## Current Status
 
-- **Phases 0 through 6.3 Completed:** Core project foundation, WASM parser, generator interpreter, memory model, stdio, pointers, 1D/2D arrays, linked lists, array-backed stacks/queues, and the 9-theme design system are fully implemented and verified with 365 unit tests.
-- **Active Areas & Next Steps:** Binary search trees, graph data structure detection and layout, and reverse step execution ("Step Back").
+- **Phases 0 through 6.5.3 Completed:** Core project foundation, WASM parser, generator interpreter, memory model, stdio, pointers, 1D/2D arrays, linked lists, array-backed stacks/queues, 9-theme design system, binary trees / BSTs (Phase 6.4), pointer-based graphs (Phase 6.5.2), and adjacency matrix graphs with targeted clearance routing (Phase 6.5.3) are fully implemented and verified with **500 unit tests across 45 suites**.
+- **Active Areas & Next Steps:** Doubly linked lists, graph adjacency lists, algorithm visualization (sorting/searching), and reverse step execution ("Step Back").

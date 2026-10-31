@@ -65,10 +65,10 @@ Codevi is structured into decoupled, unidirectional architectural layers designe
                              ▼
 ┌─────────────────────────────────────────────────────────┐
 │               7. Visualization Engine                   │
-│  - Structure Detectors: Arrays, Linked Lists, ADTs      │
-│  - SVG Connector Routing (Tiered Beziers, Outward Loops)│
-│  - Active Index Variable Tracking (i ▾, p ➔)            │
-│  - Variable & Array View, Pointer View, Memory Grid     │
+│  - Detectors: Arrays, Linked Lists, ADTs, Trees, Graphs │
+│  - Layouts: Reingold-Tilford (Trees), Layered (Graphs)  │
+│  - SVG Routing: Obstacle Clearance, Tiered Beziers, Loops│
+│  - Unified Workspace: NewVisualizationPanel             │
 └─────────────────────────────────────────────────────────┘
 ```
 

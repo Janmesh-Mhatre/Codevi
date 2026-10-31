@@ -60,5 +60,30 @@
 - Array-backed Queue detection (`front`/`rear` or `head`/`tail`) with Front and Rear indicators.
 - Dedicated `VariableArrayViewPanel` displaying scalars, 1D arrays, 2D arrays, stacks, and queues.
 
+## Phase 6.4 — Binary Tree & BST Visualization
+- Tree detection from heap struct nodes containing `left` and `right` pointer fields.
+- Binary Search Tree (BST) invariant validation and metrics computation (depth, node count, isBST, balance).
+- Deterministic Reingold-Tilford hierarchical tree layout algorithm.
+- Interactive SVG tree rendering in `NewVisualizationPanel` and `PointerViewPanel`.
+
+## Phase 6.5 V1 — Graph Visualization Foundation
+- Unified `GraphModel` architecture in `graphTypes.ts` normalizing pointer graphs, adjacency matrices, and adjacency lists.
+- Deterministic layered graph layout in `graphLayout.ts` with component separation and outer perimeter back-edge routing.
+- Representation badge tags in column headers (`Representation: Pointer Graph`, `Representation: Adjacency Matrix`).
+
+## Phase 6.5.2 — Pointer-Based Graphs
+- Discovers pointer-based graphs from heap blocks and pointer relationships with multi-target nodes, shared destinations ($in\text{-}degree \ge 2$), directed cycles, and self-loops.
+- Disambiguation heuristics distinguishing pointer graphs from linear linked lists and binary trees.
+
+## Phase 6.5.3 — Adjacency Matrix Graphs & Targeted Clearance
+- Runtime detection of $N \times N$ 2D square arrays representing graph adjacency matrices across globals and active stack frames.
+- Normalization into `GraphModel` replacing the raw 2D array representation with an interactive graph in `NewVisualizationPanel`.
+- 3-color DFS directed cycle detection and self-loop classification.
+- Targeted edge-node clearance routing: same-layer forward edges arch above intermediate obstacles, backward edges arch below obstacles with self-loop allowance, skip-layer downward edges bypass vertical corridors, and cycle back-edges maintain $\ge 20$–$26\text{px}$ clearance.
+
+## Desktop Cleanup & Test Milestone
+- Clean removal of legacy Tauri desktop dependencies, establishing Codevi as an uncompromised 100% client-side web application.
+- Test suite expanded to **45 test files and 500 tests passing cleanly (100% pass rate)**.
+
 ---
-**Current Test Suite:** 31 test files, 365 tests passing cleanly (100% pass rate).
+**Current Test Suite:** 45 test files, 500 tests passing cleanly (100% pass rate).

@@ -1,8 +1,8 @@
 # Codevi — Master Project Analysis
 
-> **Date:** September 2026  
+> **Date:** October 2026  
 > **Repository:** Codevi (`Janmesh-Mhatre/Codevi`)  
-> **Active Branch:** `development`  
+> **Active Branch:** `main`  
 > **Source of Truth:** Current Codebase Implementation  
 
 ---
@@ -74,7 +74,7 @@ Codevi follows a unidirectional, multi-tiered architecture:
 
 ## 3. Repository Structure
 
-The current active codebase consists of 63 source files in `src/`, 32 test files in `tests/`, and associated documentation:
+The current active codebase consists of modular source files in `src/`, 45 automated test suites in `tests/` with 500 passing tests, and associated documentation:
 
 ```text
 codevi/
@@ -301,32 +301,25 @@ codevi/
 
 ## 5. Visualization Architecture
 
-Codevi provides three active visualization panels alongside the AST Viewer and Memory Panel:
+Codevi provides a unified visualization workspace inside the top-right workbench area:
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
 │                        Top-Right Workbench Tabs                        │
-├──────────────┬──────────────┬───────────────┬──────────────┬───────────┤
-│     AST      │    Stack     │ Visualization │  Var & Array │  Pointer  │
-│    Viewer    │    Frames    │ (Stack & Heap)│     View     │   View    │
-└──────────────┴──────────────┴───────────────┴──────────────┴───────────┘
+├──────────────────────┬──────────────────────┬──────────────────────────┤
+│         AST          │     Declarations     │      Visualization       │
+│     ViewerPanel      │        Panel         │ (NewVisualizationPanel)  │
+└──────────────────────┴──────────────────────┴──────────────────────────┘
 ```
 
-### 5.1 Variable & Array View Panel
-- **Implementation:** [`src/components/panels/VariableArrayViewPanel.tsx`](file:///c:/Users/Janmesh%20Mhatre/Desktop/Programmes/Projects/Codevi/src/components/panels/VariableArrayViewPanel.tsx).
-- **Scalar Variables:** Clean tabular view showing name, type, simulated address badge (`@S001`), and formatted value.
-- **1D Arrays:** Horizontal indexed slot boxes showing element values, indices (`[0]`, `[1]`), base address, active index indicators (`i ▾`, `p ➔`), and read/write highlighting.
-- **2D Arrays:** Matrix grid rendering with row/column coordinate labels (`[r][c]`), dimension badges (`[2x3]`), and cell-level access indicators.
-- **Array-Backed Stacks:** Automatically recognized when an array is declared alongside an integer named `top`. Displays stack elements with a dedicated `Top` pointer marker.
-- **Array-Backed Queues:** Automatically recognized when an array is declared alongside integer indices named `front`/`rear` (or `head`/`tail`). Displays queue slots with `Front` and `Rear` position indicators.
+The active **Visualization tab** renders [`src/components/panels/NewVisualizationPanel.tsx`](file:///c:/Users/Janmesh%20Mhatre/Desktop/Programmes/Projects/Codevi/src/components/panels/NewVisualizationPanel.tsx), which dynamically detects, lays out, and renders data structures based on the executing program:
 
-### 5.2 Interactive SVG Pointer View Panel
-- **Implementation:** [`src/components/panels/PointerViewPanel.tsx`](file:///c:/Users/Janmesh%20Mhatre/Desktop/Programmes/Projects/Codevi/src/components/panels/PointerViewPanel.tsx), [`src/visualization/connectors/connectorRouting.ts`](file:///c:/Users/Janmesh%20Mhatre/Desktop/Programmes/Projects/Codevi/src/visualization/connectors/connectorRouting.ts).
+### 5.1 Memory & Pointer Graph
 - **Layout:** Bipartite layout with stack variable cards on the left, heap allocation cards on the right, and a centralized `NULL` sentinel node.
 - **Heap Block Ordering:** `orderHeapBlocks()` organizes heap cards according to actual linked-list `next` pointer traversal chains, grouping active unlinked blocks below, followed by freed blocks.
 - **Connector Routing Styles:**
   1. **Stack-to-Stack Outward Loops:** Tiered cubic bezier curves arcing into the inter-column gap to prevent cutting through card bodies.
-  2. **Stack-to-Heap Beziers:** Smooth horizontal bezier connections between stack pointers and heap blocks.
+  2. **Stack-to-Heap Beziers:** Direct and smooth horizontal bezier connections between stack pointers and heap blocks with controlled single bends.
   3. **Heap-to-Heap Adjacent Links:** Direct vertical bezier links connecting consecutive struct nodes.
   4. **Heap-to-Heap Circular Links:** Arcs routing outward around the heap column to close circular linked lists.
   5. **Pointer-to-NULL:** Connectors pointing to the centered `NULL` terminal card.
@@ -337,10 +330,36 @@ Codevi provides three active visualization panels alongside the AST Viewer and M
 - **Field-Specific Colors:** Distinct colors for struct pointer fields (`next` = accent blue/cyan, `prev` = purple, custom fields = distinct palette).
 - **Interactive Detail Sidebar:** Clicking any card or connector displays variable name, own address, target address, target region, validity status, and pointer chain depth.
 
-### 5.3 Stack & Memory Panels
-- **Stack Panel (`StackPanel.tsx`):** Displays call stack hierarchy, current line number, and active vs. caller frames.
-- **Memory Panel (`MemoryPanel.tsx`):** Comprehensive grid of all allocated stack and heap cells, tracking allocation origins, pointer resolution paths (`pp → p → x`), and active values.
-- **Visualization Panel (`VisualizationPanel.tsx`):** Dual-column stack-vs-heap layout comparing call frames and heap blocks.
+### 5.2 Array, Matrix & ADT Views
+- **Scalar Variables:** Clean tabular view showing name, type, simulated address badge (`@S001`), and formatted value.
+- **1D Arrays:** Horizontal indexed slot boxes showing element values, indices (`[0]`, `[1]`), base address, active index indicators (`i ▾`, `p ➔`), and read/write highlighting.
+- **2D Arrays:** Matrix grid rendering with row/column coordinate labels (`[r][c]`), dimension badges (`[2x3]`), and cell-level access indicators.
+- **Array-Backed Stacks:** Automatically recognized when an array is declared alongside an integer named `top`. Displays stack elements with a dedicated `Top` pointer marker.
+- **Array-Backed Queues:** Automatically recognized when an array is declared alongside integer indices named `front`/`rear` (or `head`/`tail`). Displays queue slots with `Front` and `Rear` position indicators.
+
+### 5.3 Binary Tree & BST Visualization (Phase 6.4)
+- **Implementation:** [`src/visualization/detectors/treeDetector.ts`](file:///c:/Users/Janmesh%20Mhatre/Desktop/Programmes/Projects/Codevi/src/visualization/detectors/treeDetector.ts), [`src/visualization/layout/treeLayout.ts`](file:///c:/Users/Janmesh%20Mhatre/Desktop/Programmes/Projects/Codevi/src/visualization/layout/treeLayout.ts), [`src/components/panels/pointerViewTreeLayout.ts`](file:///c:/Users/Janmesh%20Mhatre/Desktop/Programmes/Projects/Codevi/src/components/panels/pointerViewTreeLayout.ts).
+- **Tree Detection:** Identifies tree structures from heap struct nodes containing `left` and `right` pointer fields. Evaluates Binary Search Tree (BST) ordering invariants and computes tree depth, node count, and balance metrics.
+- **Layout Algorithm:** Symmetrical Reingold-Tilford hierarchical layout ensuring non-overlapping subtrees with deterministic node positioning.
+- **Rendering:** SVG branch connectors for left and right children with directional marker heads and depth level guides.
+
+### 5.4 Graph Visualization (Phase 6.5 - 6.5.3)
+- **Domain Model:** [`src/visualization/models/graphTypes.ts`](file:///c:/Users/Janmesh%20Mhatre/Desktop/Programmes/Projects/Codevi/src/visualization/models/graphTypes.ts) provides a unified `GraphModel` normalizing pointer graphs and adjacency matrices.
+- **Pointer-Based Graphs (Phase 6.5.2):** Discovered from heap allocations and pointer relationships when multi-target fan-outs, shared destinations ($in\text{-}degree \ge 2$), directed cycles, or self-loops exist.
+- **Adjacency Matrix Graphs (Phase 6.5.3):** Runtime detection of $N \times N$ 2D square arrays containing binary or weighted connectivity entries across global and stack frames. Replaces the raw 2D array representation with an interactive graph.
+- **Deterministic Layered Layout:** [`src/visualization/layout/graphLayout.ts`](file:///c:/Users/Janmesh%20Mhatre/Desktop/Programmes/Projects/Codevi/src/visualization/layout/graphLayout.ts) layers nodes using cycle-breaking BFS/DFS.
+- **Targeted Edge-Node Clearance Fix:**
+  - *Same-layer cross-edges:* Forward edges ($B \to D$) arch upward with $yArch = \min(y_{obs}) - 26\text{px}$; backward edges ($D \to B$) arch downward with $yArch = \max(y_{obs} + h) + 26\text{px}$ (+ self-loop allowance).
+  - *Skip-layer downward cross-edges:* Intermediate obstacles in vertical corridors trigger outer right perimeter routing.
+  - *Upward cycle back-edges:* Outer perimeter corridors expand beyond all intermediate nodes ($minLeft - 26\text{px}$ or $maxRight + 26\text{px}$).
+  - *Self-loops:* Smooth arcs positioned below node bottom boundaries.
+  - *Disconnected components:* Positioned with clear separation margins (`GRAPH_COMPONENT_GAP = 60px`).
+
+### 5.5 Supporting Panels
+- **AST Viewer Panel (`AstViewerPanel.tsx`):** Expandable syntax tree with node counts and parse time metrics.
+- **Declarations Panel (`DeclarationsPanel.tsx`):** Summary of all user declarations across scopes.
+- **Stack Frames Panel (`StackPanel.tsx`):** Displays call stack hierarchy, current line number, and active vs. caller frames.
+- **Memory Grid Panel (`MemoryPanel.tsx`):** Comprehensive grid of all allocated stack and heap cells, tracking allocation origins, pointer resolution paths (`pp → p → x`), and active values.
 
 ---
 
@@ -369,29 +388,28 @@ Codevi provides three active visualization panels alongside the AST Viewer and M
 
 - **Test Runner:** Vitest 4.1.10.
 - **Configuration:** `vitest.config.ts` sets `fileParallelism: false` to ensure deterministic sequential execution of WebAssembly-heavy tests.
-- **Current Test Count:** **31 test files, 365 tests — 100% passing.**
+- **Current Test Count:** **45 test files, 500 tests — 100% passing.**
 
 | Test Suite / Area | Files | Tests | Verification Scope |
 |---|---|---|---|
 | **Parser & AST** | 1 | 19 | Tree-sitter WASM initialization, incremental parsing, diagnostic recovery |
-| **Interpreter Core** | 2 | 24 | Basic expressions, scoping, arithmetic, user code verification |
-| **Control Flow** | 1 | 24 | `switch`, `case`, `default`, fallthrough, `break`, `continue` |
-| **Functions & Call Stack** | 2 | 17 | User-defined functions, recursion, parameter passing, call depth |
-| **Standard I/O** | 3 | 48 | `printf`, `scanf`, `puts`, `putchar`, `getchar`, format specifiers |
-| **Pointers & Memory** | 10 | 108 | `&`, `*`, `**`, arithmetic, subtraction, `malloc`, `free`, double-free, use-after-free |
+| **Interpreter Core** | 6 | 78 | Basic expressions, scoping, functions, recursion, switch/case/break/continue |
+| **Call Stack & Stdio Engine** | 2 | 12 | Call stack tracking, execution engine stdio hooks |
+| **Standard I/O Subsystem** | 2 | 43 | `printf`, `scanf`, `puts`, `putchar`, `getchar`, format specifiers |
+| **Pointers & Simulated Memory** | 12 | 137 | `&`, `*`, `**`, pointer arithmetic, subtraction, `malloc`/`free`, double-free, use-after-free |
 | **Arrays (1D & 2D)** | 2 | 23 | 1D arrays, 2D arrays, indexing, array decay, bounds validation |
-| **Linked Lists** | 4 | 24 | Singly linked lists, cycle detection, pointer ordering, heap connectors |
-| **Stacks & Queues** | 1 | 9 | Array-backed stack and queue detection, index tracking |
-| **Visualization Architecture** | 2 | 32 | `StructureGraph` extraction, diffing, active indices, bounds cues |
-| **UI & Themes** | 3 | 37 | Theme switching, Monaco sync, `uiStore` resizing, variable array view |
-| **Total** | **31** | **365** | **All 365 tests passing cleanly** |
+| **Linked Lists, Stacks & Queues** | 5 | 40 | Singly linked lists, cycle detection, pointer ordering, array-backed stacks/queues |
+| **Trees (Phase 6.4)** | 2 | 19 | Binary trees, BST validation, metrics, Reingold-Tilford layout, UI rendering |
+| **Graphs (Phase 6.5 - 6.5.3)** | 5 | 53 | GraphModel, pointer graphs, adjacency matrix graphs, cycle DFS, targeted obstacle clearance |
+| **UI, Stores & Themes** | 8 | 76 | Theme switching, Monaco sync, `uiStore` resizing, variable array view, panels dropdown |
+| **Total** | **45** | **500** | **All 500 tests passing cleanly (100% pass rate)** |
 
 ---
 
 ## 8. Build & Deployment Configuration
 
 - **Development:** `npm run dev` starts Vite development server on port 1420 (strict port, HMR enabled).
-- **Testing:** `npm test` runs `vitest run` sequentially across all 31 test suites.
+- **Testing:** `npm test` runs `vitest run` sequentially across all 45 test suites.
 - **Type Checking & Production Build:** `npm run build` runs `tsc && vite build`, emitting optimized assets to `dist/`:
   - `web-tree-sitter.wasm` (444.60 kB)
   - `tree-sitter-c.wasm` (175.76 kB)
@@ -424,9 +442,13 @@ Codevi provides three active visualization panels alongside the AST Viewer and M
 | Interactive SVG Pointer View | **Implemented** | `src/components/panels/PointerViewPanel.tsx` |
 | Linked List Detection & Heap Connectors | **Implemented** | `src/visualization/detectors/structureDetector.ts` |
 | Array-Backed Stack & Queue Visualization | **Implemented** | `src/visualization/detectors/structureDetector.ts`, `VariableArrayViewPanel.tsx` |
+| Binary Tree & BST Visualization | **Implemented** | `src/visualization/detectors/treeDetector.ts`, `treeLayout.ts` |
+| Pointer-Based Graph Visualization | **Implemented** | `src/visualization/detectors/graphDetector.ts`, `graphLayout.ts` |
+| Adjacency Matrix Graph Visualization | **Implemented** | `src/visualization/detectors/graphDetector.ts`, `graphLayout.ts` |
+| Graph Edge-Node Clearance Routing | **Implemented** | `src/visualization/layout/graphLayout.ts` |
 | 9-Theme Design System | **Implemented** | `src/themes/`, `uiStore.ts` |
 | Linked-List Backed Stack / Queue | **Unsupported** | Not implemented (detection is array-backed only) |
-| Binary Trees & Graphs | **Planned** | Types exist in `structureTypes.ts`, extractors not implemented |
+| Graph Adjacency Lists | **Planned** | Array of struct pointers (`struct Node *adj[N]`); planned for Phase 7 |
 | General String Variables (`char[]`, `char*`) | **Unsupported** | String literals only work in `printf`/`puts` |
 | Reverse Stepping ("Step Back") | **Planned** | Button disabled in UI |
 
@@ -437,7 +459,7 @@ Codevi provides three active visualization panels alongside the AST Viewer and M
 ### Technical Debt & Legacy Relics
 1. **Unused Legacy Stores:** [`src/state/memoryStore.ts`](file:///c:/Users/Janmesh%20Mhatre/Desktop/Programmes/Projects/Codevi/src/state/memoryStore.ts) is an inert Phase 1 relic. All live memory data is maintained in `executionStore`.
 2. **Skeleton Types:** [`src/types/index.ts`](file:///c:/Users/Janmesh%20Mhatre/Desktop/Programmes/Projects/Codevi/src/types/index.ts) contains unused stub types from the Phase 0/1 skeleton.
-3. **Modular Visualization Components:** [`src/visualization/components/StructureVisualizationPanel.tsx`](file:///c:/Users/Janmesh%20Mhatre/Desktop/Programmes/Projects/Codevi/src/visualization/components/StructureVisualizationPanel.tsx) and its child canvas components are tested in unit tests but are not currently mounted in `AppShell.tsx` (the app currently mounts `VariableArrayViewPanel` and `PointerViewPanel`).
+3. **Modular Visualization Components:** [`src/visualization/components/StructureVisualizationPanel.tsx`](file:///c:/Users/Janmesh%20Mhatre/Desktop/Programmes/Projects/Codevi/src/visualization/components/StructureVisualizationPanel.tsx) is tested in unit tests; the active workbench mounts [`NewVisualizationPanel.tsx`](file:///c:/Users/Janmesh%20Mhatre/Desktop/Programmes/Projects/Codevi/src/components/panels/NewVisualizationPanel.tsx) under the "Visualization" tab in `AppShell.tsx`.
 
 ### Implementation Gaps
 1. **Strings as Variables:** Variables cannot store strings (`char str[] = "hello"` or `char *s = "text"` are unsupported).

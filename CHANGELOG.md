@@ -4,6 +4,84 @@ All notable changes to Codevi are documented here.
 
 ---
 
+## Phase 6.5.3 — Adjacency Matrix Graphs & Targeted Edge-Node Clearance
+
+### Added
+- **Adjacency Matrix Detection** (`src/visualization/detectors/graphDetector.ts`):
+  - Automatically identifies $N \times N$ 2D square arrays ($2 \le N \le 16$) representing graph adjacency matrices across globals and active stack frames.
+  - Recognizes semantic naming patterns (`graph`, `adj`, `matrix`, `g`, `g1`, `network`, etc.) with conservative validation (non-zero edge counts, non-square rejection).
+  - Normalizes detected matrices into the unified `GraphModel`, scoping vertex IDs as `${varName}_v_${i}` with alphanumeric display labels (`Node A`, `Node B`, ...).
+  - Seamlessly integrates into `StructureGraph` extraction, cleanly replacing the raw 2D array representation with an interactive graph in `NewVisualizationPanel`.
+  - Directed cycle detection using 3-color DFS marking `hasCycles` and `hasSelfLoops` metadata.
+- **Targeted Edge-Node Clearance Routing** (`src/visualization/layout/graphLayout.ts`):
+  - **Same-layer obstacle avoidance:** Detects intermediate nodes positioned between source and target on horizontal layers. Forward edges ($B \to D$) arch upward above intermediate nodes ($yArch = \min(y_{obs}) - 26\text{px}$); backward edges ($D \to B$) arch downward below intermediate nodes ($yArch = \max(y_{obs} + h) + 26\text{px}$ + self-loop allowance).
+  - **Skip-layer downward corridor clearance:** Scans for intermediate nodes within vertical/horizontal corridors and routes skip-layer cross-edges along the outer perimeter.
+  - **Upward cycle back-edge clearance:** Expands outer perimeter routing corridors beyond all intermediate nodes between source and target levels ($minLeft - 26\text{px}$ or $maxRight + 26\text{px}$).
+- **Automated Verification:**
+  - 12 comprehensive unit tests in `tests/unit/visualization/adjacencyMatrixGraph.test.ts` verifying basic directed graphs, branching graphs, cycles, diagonal self-loops, disconnected components, shared destinations, 2D array non-classification, multi-matrix detection, reactive mutations across execution steps, and dense $K_4$ clearance $\ge 20\text{px}$.
+
+---
+
+## Phase 6.5.2 — Pointer-Based Graphs
+
+### Added
+- **Pointer Graph Detection** (`src/visualization/detectors/graphDetector.ts` & `pointerGraphLayout.ts`):
+  - Automatically discovers pointer-based graph topologies formed by heap blocks and pointer relationships.
+  - Heuristically identifies graph structures through multi-target node fan-outs, shared destinations ($in\text{-}degree \ge 2$), directed cycles, cross-edges, and self-loops.
+  - Strict disambiguation rules prevent misclassifying linear linked lists or binary trees as graphs.
+- **Layered Deterministic Layout:**
+  - Cycle-breaking BFS/DFS node layering preventing infinite loops.
+  - Collision-free node placement with horizontal spacing (`GRAPH_H_GAP = 44px`) and level spacing (`GRAPH_LEVEL_V_GAP = 64px`).
+  - Outward curved back-edge routing for cyclic connections.
+- **Automated Verification:**
+  - 11 unit tests in `tests/unit/visualization/pointerGraphModel.test.ts` and 6 UI integration tests in `tests/unit/ui/pointerViewGraph.test.tsx`.
+
+---
+
+## Phase 6.5 V1 — Graph Visualization Foundation
+
+### Added
+- **Unified Graph Architecture** (`src/visualization/models/graphTypes.ts`):
+  - Defines the core `GraphModel`, `GraphNode`, and `GraphEdge` domain types.
+  - Normalizes disparate graph representations (`pointer-based`, `adjacency-matrix`, `adjacency-list`) into a single internal representation.
+  - `graphModelToStructureItem()` adapter converting GraphModels into Codevi `StructureItem` nodes and links for unified diffing, filtering, and rendering.
+- **Graph Layout Engine** (`src/visualization/layout/graphLayout.ts`):
+  - Layered hierarchical layout engine computing collision-free coordinates for arbitrary directed graphs.
+  - Deterministic component separation (`GRAPH_COMPONENT_GAP = 60px`) for disconnected subgraphs.
+  - Self-loop routing generating smooth arcs positioned cleanly below node bottom boundaries.
+- **UI & Panel Integration**:
+  - Representation badges (`Representation: Pointer Graph`, `Representation: Adjacency Matrix`).
+  - Interactive SVG rendering in `NewVisualizationPanel.tsx` and `StructureVisualizationPanel.tsx`.
+- **Automated Verification:**
+  - 13 unit tests in `tests/unit/visualization/graphVisualization.test.ts` and 15 UI integration tests in `tests/unit/ui/newVisualizationGraph.test.tsx`.
+
+---
+
+## Phase 6.4 — Binary Tree & BST Visualization
+
+### Added
+- **Tree Detection & Analysis** (`src/visualization/detectors/treeDetector.ts` & `pointerViewTreeLayout.ts`):
+  - Discovers binary tree structures from heap struct nodes containing `left` and `right` pointer fields.
+  - Classifies tree topologies: identifies roots, evaluates Binary Search Tree (BST) ordering invariants, and computes metrics (depth, node count, balance).
+- **Deterministic Reingold-Tilford Layout** (`src/visualization/layout/treeLayout.ts`):
+  - Symmetrical hierarchical tree placement algorithm ensuring child subtrees do not overlap.
+  - Left and right branch connector routing with distinct visual cues.
+- **UI Integration**:
+  - Interactive Tree View embedded in `NewVisualizationPanel` and `PointerViewPanel`.
+- **Automated Verification:**
+  - 13 unit tests in `tests/unit/visualization/treeVisualization.test.ts` and 6 UI tests in `tests/unit/ui/pointerViewTree.test.tsx`.
+
+---
+
+## Architecture & Infrastructure Updates
+
+### Changed
+- **Pure Browser Architecture:** Cleanly removed legacy Tauri desktop runtime dependencies and configuration via `.gitignore` and build scripts, establishing Codevi as an uncompromised 100% client-side web application.
+- **Test Suite Milestone:** Expanded automated test coverage from 31 test files / 365 tests to **45 test files / 500 tests passing cleanly (100% pass rate)**.
+- **Workbench Layout:** Integrated `NewVisualizationPanel` with Top-Right tabs (AST, Declarations, Visualization) unifying memory, arrays, ADTs, trees, and graphs.
+
+---
+
 ## Phase 6 — Pointer Visualization & Comprehensive Memory Model
 
 ### Added

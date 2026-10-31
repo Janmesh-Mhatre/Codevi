@@ -1,6 +1,6 @@
 # Codevi — Feature Status Matrix
 
-This document provides a verified, comprehensive status of all language, runtime, memory, and visualization features in the Codevi repository as of September 2026. Every status is verified directly against the active implementation and test suite.
+This document provides a verified, comprehensive status of all language, runtime, memory, and visualization features in the Codevi repository as of October 2026. Every status is verified directly against the active implementation and test suite.
 
 ---
 
@@ -89,6 +89,9 @@ This document provides a verified, comprehensive status of all language, runtime
 | Singly Linked Lists | **Implemented** | Head detection, `next` chain traversal, and heap node visualization. |
 | Circular Linked Lists | **Implemented** | Cycle detection prevents infinite visualization loops; renders outer circular loop arc. |
 | Doubly Linked Lists | **Partially Implemented** | Struct parsing and routing color for `prev` exist, but traversal heuristic is singly-linked focused. |
+| Binary Trees & BSTs | **Implemented** | Identifies trees from `left`/`right` struct pointers; computes depth, size, BST validity, and balance. |
+| Pointer-Based Graphs | **Implemented** | Discovers multi-target nodes, shared destinations ($in\text{-}degree \ge 2$), directed cycles, and self-loops. |
+| Adjacency Matrix Graphs | **Implemented** | Detects $N \times N$ 2D square arrays with binary/weighted edges and obstacle-avoidance routing. |
 
 ---
 
@@ -142,7 +145,11 @@ This document provides a verified, comprehensive status of all language, runtime
 | Heap-to-Heap Connector Routing | **Implemented** | Adjacent links, reverse links, and circular closing loops for linked lists. |
 | Heap Block Traversal Ordering | **Implemented** | Orders heap blocks based on `next` pointer traversal rather than allocation ID. |
 | Pointer Detail Sidebar | **Implemented** | Card and arrow click inspection showing address, region, target, chain depth, and status. |
-| Binary Search Trees & Graphs | **Planned** | Types exist in `structureTypes.ts`; visual extractors not yet implemented. |
+| Unified Visualization Panel | **Implemented** | `NewVisualizationPanel` with Top-Right tabs (AST, Declarations, Visualization) unifying memory, arrays, trees, and graphs. |
+| Binary Search Trees & BSTs | **Implemented** | Deterministic Reingold-Tilford hierarchical layout with left/right child branch routing and metrics badges. |
+| Pointer-Based Graphs | **Implemented** | Layered collision-free layout, cycle outer perimeter back-edges, self-loops, and component separation. |
+| Adjacency Matrix Graphs | **Implemented** | Normalizes 2D square arrays into `GraphModel`; targeted obstacle clearance keeps cross-edges $\ge 20$–$26\text{px}$ clear. |
+| Graph Adjacency Lists | **Planned** | Array of struct pointers (`struct Node *adj[N]`); planned for Phase 7. |
 
 ---
 
@@ -153,6 +160,6 @@ This document provides a verified, comprehensive status of all language, runtime
 | Workbench Layout & Resizing | **Implemented** | Resizable splitters between Editor, Tabs, Bottom panels, and Console. |
 | Monaco Editor Integration | **Implemented** | Offline web worker, caret remeasurement, syntax diagnostics, execution line highlight. |
 | Curated 9-Theme System | **Implemented** | 9 themes with `localStorage` persistence and dynamic Monaco editor theme synchronization. |
-| Automated Unit Testing | **Implemented** | **31 test files, 365 tests — 100% passing.** |
+| Automated Unit Testing | **Implemented** | **45 test files, 500 tests — 100% passing.** |
 | Browser-Only Architecture | **Active** | Pure React + TypeScript browser runtime; obsolete desktop packaging removed. |
 | Reverse Stepping ("Step Back") | **Planned** | Toolbar button disabled with placeholder message. |

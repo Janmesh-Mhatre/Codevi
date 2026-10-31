@@ -23,12 +23,19 @@
     - [x] **Phase 6.1 Array Visualization** — 1D and 2D stack arrays, active index tracking (`i ▾`), boundary cues, per-step read/write access highlighting.
     - [x] **Phase 6.2 Linked List Support** — Struct definitions, field access (`.`, `->`), heap-to-heap SVG connectors, linked-list traversal ordering, circular list cycle detection.
     - [x] **Phase 6.3 Stack & Queue Visualization** — Array-backed Stack (`top` indicator) and Queue (`front`/`rear` indicators) visualization in `VariableArrayViewPanel`.
-7.  [ ] **Advanced Data Structures**
+    - [x] **Phase 6.4 Binary Tree & BST Visualization** — Binary tree detection (`left`, `right`), BST invariant validation, metrics calculation, and Reingold-Tilford hierarchical layout.
+    - [x] **Phase 6.5 Graph Foundation** — Unified `GraphModel` architecture and layered layout engine.
+        - [x] **Phase 6.5.1 Graph Foundation V1** — Unified model, layered layout, component separation, back-edge routing.
+        - [x] **Phase 6.5.2 Pointer-Based Graphs** — Discovers multi-target nodes, shared destinations ($in\text{-}degree \ge 2$), directed cycles, and self-loops from pointer heap blocks.
+        - [x] **Phase 6.5.3 Adjacency Matrix Graphs** — $N \times N$ 2D square array detection, replacement with interactive graph, 3-color DFS cycle detection, and targeted obstacle-avoidance clearance routing.
+7.  [ ] **Advanced Data Structures & Extended Representations**
     - [x] Singly Linked Lists (completed in Phase 6.2)
     - [x] Circular Linked Lists (completed in Phase 6.2)
     - [x] Array-Backed Stacks & Queues (completed in Phase 6.3)
-    - [ ] Binary Search Trees (planned)
-    - [ ] Graphs & Adjacency Structures (planned)
+    - [x] Binary Search Trees (completed in Phase 6.4)
+    - [x] Pointer-Based Graphs (completed in Phase 6.5.2)
+    - [x] Adjacency Matrix Graphs (completed in Phase 6.5.3)
+    - [ ] Graph Adjacency Lists (planned)
     - [ ] Doubly Linked Lists (in progress)
 8.  [ ] **Algorithm Visualization** (Sorting, searching, step-by-step partition/merge)
 9.  [ ] **Explanation Engine** (Dynamic step explanations, complexity hints)
